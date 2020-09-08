@@ -55,6 +55,8 @@ public class LegacyTypeInfoDataTypeConverterTest {
 			new Object[][]{
 				{Types.STRING, DataTypes.STRING()},
 
+				{Types.STRING, DataTypes.STRING().notNull()},
+
 				{Types.BOOLEAN, DataTypes.BOOLEAN()},
 
 				{Types.SQL_TIMESTAMP, DataTypes.TIMESTAMP(3).bridgedTo(java.sql.Timestamp.class)},
@@ -63,7 +65,7 @@ public class LegacyTypeInfoDataTypeConverterTest {
 					Types.GENERIC(LegacyTypeInfoDataTypeConverterTest.class),
 					new AtomicDataType(
 						new LegacyTypeInformationType<>(
-							LogicalTypeRoot.ANY,
+							LogicalTypeRoot.RAW,
 							Types.GENERIC(LegacyTypeInfoDataTypeConverterTest.class)))
 				},
 
@@ -137,7 +139,7 @@ public class LegacyTypeInfoDataTypeConverterTest {
 
 	@Test
 	public void testTypeInfoToDataTypeConversion() {
-		assertThat(LegacyTypeInfoDataTypeConverter.toDataType(inputTypeInfo), equalTo(dataType));
+		assertThat(LegacyTypeInfoDataTypeConverter.toDataType(inputTypeInfo), equalTo(dataType.nullable()));
 	}
 
 	@Test

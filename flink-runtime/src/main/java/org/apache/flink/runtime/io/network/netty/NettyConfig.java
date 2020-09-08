@@ -19,8 +19,9 @@
 package org.apache.flink.runtime.io.network.netty;
 
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.NetworkEnvironmentOptions;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.runtime.net.SSLUtils;
+import org.apache.flink.util.NetUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +64,7 @@ public class NettyConfig {
 
 		this.serverAddress = checkNotNull(serverAddress);
 
-		checkArgument(serverPort >= 0 && serverPort <= 65536, "Invalid port number.");
+		checkArgument(NetUtils.isValidHostPort(serverPort), "Invalid port number.");
 		this.serverPort = serverPort;
 
 		checkArgument(memorySegmentSize > 0, "Invalid memory segment size.");
@@ -85,50 +86,46 @@ public class NettyConfig {
 		return serverPort;
 	}
 
-	int getMemorySegmentSize() {
-		return memorySegmentSize;
-	}
-
-	public int getNumberOfSlots() {
-		return numberOfSlots;
-	}
-
 	// ------------------------------------------------------------------------
 	// Getters
 	// ------------------------------------------------------------------------
 
 	public int getServerConnectBacklog() {
-		return config.getInteger(NetworkEnvironmentOptions.CONNECT_BACKLOG);
+		return config.getInteger(NettyShuffleEnvironmentOptions.CONNECT_BACKLOG);
 	}
 
 	public int getNumberOfArenas() {
 		// default: number of slots
-		final int configValue = config.getInteger(NetworkEnvironmentOptions.NUM_ARENAS);
+		final int configValue = config.getInteger(NettyShuffleEnvironmentOptions.NUM_ARENAS);
 		return configValue == -1 ? numberOfSlots : configValue;
 	}
 
 	public int getServerNumThreads() {
 		// default: number of task slots
-		final int configValue = config.getInteger(NetworkEnvironmentOptions.NUM_THREADS_SERVER);
+		final int configValue = config.getInteger(NettyShuffleEnvironmentOptions.NUM_THREADS_SERVER);
 		return configValue == -1 ? numberOfSlots : configValue;
 	}
 
 	public int getClientNumThreads() {
 		// default: number of task slots
-		final int configValue = config.getInteger(NetworkEnvironmentOptions.NUM_THREADS_CLIENT);
+		final int configValue = config.getInteger(NettyShuffleEnvironmentOptions.NUM_THREADS_CLIENT);
 		return configValue == -1 ? numberOfSlots : configValue;
 	}
 
 	public int getClientConnectTimeoutSeconds() {
-		return config.getInteger(NetworkEnvironmentOptions.CLIENT_CONNECT_TIMEOUT_SECONDS);
+		return config.getInteger(NettyShuffleEnvironmentOptions.CLIENT_CONNECT_TIMEOUT_SECONDS);
+	}
+
+	public int getNetworkRetries() {
+		return config.getInteger(NettyShuffleEnvironmentOptions.NETWORK_RETRIES);
 	}
 
 	public int getSendAndReceiveBufferSize() {
-		return config.getInteger(NetworkEnvironmentOptions.SEND_RECEIVE_BUFFER_SIZE);
+		return config.getInteger(NettyShuffleEnvironmentOptions.SEND_RECEIVE_BUFFER_SIZE);
 	}
 
 	public TransportType getTransportType() {
-		String transport = config.getString(NetworkEnvironmentOptions.TRANSPORT_TYPE);
+		String transport = config.getString(NettyShuffleEnvironmentOptions.TRANSPORT_TYPE);
 
 		switch (transport) {
 			case "nio":
@@ -155,7 +152,7 @@ public class NettyConfig {
 	}
 
 	public boolean getSSLEnabled() {
-		return config.getBoolean(NetworkEnvironmentOptions.DATA_SSL_ENABLED)
+		return config.getBoolean(NettyShuffleEnvironmentOptions.DATA_SSL_ENABLED)
 			&& SSLUtils.isInternalSSLEnabled(config);
 	}
 

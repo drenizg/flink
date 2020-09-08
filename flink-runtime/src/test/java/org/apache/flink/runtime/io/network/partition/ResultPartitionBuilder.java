@@ -18,15 +18,12 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
-import org.apache.flink.runtime.io.network.NetworkEnvironment;
+import org.apache.flink.runtime.io.disk.FileChannelManager;
+import org.apache.flink.runtime.io.disk.NoOpFileChannelManager;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.buffer.BufferPoolOwner;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
-import org.apache.flink.runtime.taskmanager.NoOpTaskActions;
-import org.apache.flink.runtime.taskmanager.TaskActions;
 import org.apache.flink.util.function.FunctionWithException;
 
 import java.io.IOException;
@@ -36,13 +33,14 @@ import java.util.Optional;
  * Utility class to encapsulate the logic of building a {@link ResultPartition} instance.
  */
 public class ResultPartitionBuilder {
-	private JobID jobId = new JobID();
-
-	private final TaskActions taskActions = new NoOpTaskActions();
 
 	private ResultPartitionID partitionId = new ResultPartitionID();
 
 	private ResultPartitionType partitionType = ResultPartitionType.PIPELINED;
+
+	private BoundedBlockingSubpartitionType blockingSubpartitionType = BoundedBlockingSubpartitionType.AUTO;
+
+	private int partitionIndex = 0;
 
 	private int numberOfSubpartitions = 1;
 
@@ -50,23 +48,27 @@ public class ResultPartitionBuilder {
 
 	private ResultPartitionManager partitionManager = new ResultPartitionManager();
 
-	private ResultPartitionConsumableNotifier partitionConsumableNotifier = new NoOpResultPartitionConsumableNotifier();
+	private FileChannelManager channelManager = NoOpFileChannelManager.INSTANCE;
 
-	private IOManager ioManager = new IOManagerAsync();
-
-	private boolean sendScheduleOrUpdateConsumersMessage = false;
-
-	private NetworkBufferPool networkBufferPool = new NetworkBufferPool(1, 1, 1);
+	private NetworkBufferPool networkBufferPool = new NetworkBufferPool(1, 1);
 
 	private int networkBuffersPerChannel = 1;
 
 	private int floatingNetworkBuffersPerGate = 1;
 
+	private int maxBuffersPerChannel = Integer.MAX_VALUE;
+
+	private int networkBufferSize = 1;
+
 	@SuppressWarnings("OptionalUsedAsFieldOrParameterType")
 	private Optional<FunctionWithException<BufferPoolOwner, BufferPool, IOException>> bufferPoolFactory = Optional.empty();
 
-	public ResultPartitionBuilder setJobId(JobID jobId) {
-		this.jobId = jobId;
+	private boolean blockingShuffleCompressionEnabled = false;
+
+	private String compressionCodec = "LZ4";
+
+	public ResultPartitionBuilder setResultPartitionIndex(int partitionIndex) {
+		this.partitionIndex = partitionIndex;
 		return this;
 	}
 
@@ -95,26 +97,15 @@ public class ResultPartitionBuilder {
 		return this;
 	}
 
-	ResultPartitionBuilder setResultPartitionConsumableNotifier(ResultPartitionConsumableNotifier notifier) {
-		this.partitionConsumableNotifier = notifier;
+	public ResultPartitionBuilder setFileChannelManager(FileChannelManager channelManager) {
+		this.channelManager = channelManager;
 		return this;
 	}
 
-	public ResultPartitionBuilder setIOManager(IOManager ioManager) {
-		this.ioManager = ioManager;
-		return this;
-	}
-
-	public ResultPartitionBuilder setSendScheduleOrUpdateConsumersMessage(
-		boolean sendScheduleOrUpdateConsumersMessage) {
-
-		this.sendScheduleOrUpdateConsumersMessage = sendScheduleOrUpdateConsumersMessage;
-		return this;
-	}
-
-	public ResultPartitionBuilder setupBufferPoolFactoryFromNetworkEnvironment(NetworkEnvironment environment) {
+	public ResultPartitionBuilder setupBufferPoolFactoryFromNettyShuffleEnvironment(NettyShuffleEnvironment environment) {
 		return setNetworkBuffersPerChannel(environment.getConfiguration().networkBuffersPerChannel())
 			.setFloatingNetworkBuffersPerGate(environment.getConfiguration().floatingNetworkBuffersPerGate())
+			.setNetworkBufferSize(environment.getConfiguration().networkBufferSize())
 			.setNetworkBufferPool(environment.getNetworkBufferPool());
 	}
 
@@ -123,13 +114,18 @@ public class ResultPartitionBuilder {
 		return this;
 	}
 
-	private ResultPartitionBuilder setNetworkBuffersPerChannel(int networkBuffersPerChannel) {
+	public ResultPartitionBuilder setNetworkBuffersPerChannel(int networkBuffersPerChannel) {
 		this.networkBuffersPerChannel = networkBuffersPerChannel;
 		return this;
 	}
 
-	private ResultPartitionBuilder setFloatingNetworkBuffersPerGate(int floatingNetworkBuffersPerGate) {
+	public ResultPartitionBuilder setFloatingNetworkBuffersPerGate(int floatingNetworkBuffersPerGate) {
 		this.floatingNetworkBuffersPerGate = floatingNetworkBuffersPerGate;
+		return this;
+	}
+
+	ResultPartitionBuilder setNetworkBufferSize(int networkBufferSize) {
+		this.networkBufferSize = networkBufferSize;
 		return this;
 	}
 
@@ -139,27 +135,45 @@ public class ResultPartitionBuilder {
 		return this;
 	}
 
+	public ResultPartitionBuilder setBlockingShuffleCompressionEnabled(boolean blockingShuffleCompressionEnabled) {
+		this.blockingShuffleCompressionEnabled = blockingShuffleCompressionEnabled;
+		return this;
+	}
+
+	public ResultPartitionBuilder setCompressionCodec(String compressionCodec) {
+		this.compressionCodec = compressionCodec;
+		return this;
+	}
+
+	ResultPartitionBuilder setBoundedBlockingSubpartitionType(
+			@SuppressWarnings("SameParameterValue") BoundedBlockingSubpartitionType blockingSubpartitionType) {
+		this.blockingSubpartitionType = blockingSubpartitionType;
+		return this;
+	}
+
 	public ResultPartition build() {
 		ResultPartitionFactory resultPartitionFactory = new ResultPartitionFactory(
 			partitionManager,
-			ioManager,
+			channelManager,
 			networkBufferPool,
+			blockingSubpartitionType,
 			networkBuffersPerChannel,
-			floatingNetworkBuffersPerGate);
+			floatingNetworkBuffersPerGate,
+			networkBufferSize,
+			blockingShuffleCompressionEnabled,
+			compressionCodec,
+			maxBuffersPerChannel);
 
 		FunctionWithException<BufferPoolOwner, BufferPool, IOException> factory = bufferPoolFactory.orElseGet(() ->
 			resultPartitionFactory.createBufferPoolFactory(numberOfSubpartitions, partitionType));
 
 		return resultPartitionFactory.create(
 			"Result Partition task",
-			taskActions,
-			jobId,
+			partitionIndex,
 			partitionId,
 			partitionType,
 			numberOfSubpartitions,
 			numTargetKeyGroups,
-			partitionConsumableNotifier,
-			sendScheduleOrUpdateConsumersMessage,
 			factory);
 	}
 }

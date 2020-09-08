@@ -152,7 +152,7 @@ public class KinesisDataFetcherTest extends TestLogger {
 		// emitting a null (i.e., a corrupt record) should not produce any output, but still have the shard state updated
 		fetcher.emitRecordAndUpdateState(null, 10L, 1, new SequenceNumber("seq-num-2"));
 			assertEquals(new SequenceNumber("seq-num-2"), testShardStates.get(1).getLastProcessedSequenceNum());
-		assertEquals(null, sourceContext.removeLatestOutput()); // no output should have been collected
+		assertNull(sourceContext.removeLatestOutput()); // no output should have been collected
 	}
 
 	@Test
@@ -846,7 +846,7 @@ public class KinesisDataFetcherTest extends TestLogger {
 		DummyFlinkKinesisConsumer<String> consumer = new DummyFlinkKinesisConsumer<>(
 			TestUtils.getStandardProperties(), fetcher, 1, 0);
 
-		CheckedThread consumerThread = new CheckedThread() {
+		CheckedThread consumerThread = new CheckedThread("FlinkKinesisConsumer") {
 			@Override
 			public void go() throws Exception {
 				consumer.run(new TestSourceContext<>());
@@ -857,6 +857,10 @@ public class KinesisDataFetcherTest extends TestLogger {
 
 		// ShardConsumer exception (from deserializer) will result in fetcher being shut down.
 		fetcher.waitUntilShutdown(20, TimeUnit.SECONDS);
+
+		// Ensure that KinesisDataFetcher has exited its while(running) loop and is inside its awaitTermination()
+		// method before we interrupt its thread, so that our interrupt doesn't get absorbed by any other mechanism.
+		fetcher.waitUntilAwaitTermination(20, TimeUnit.SECONDS);
 
 		// Interrupt the thread so that KinesisDataFetcher#awaitTermination() will throw InterruptedException.
 		consumerThread.interrupt();

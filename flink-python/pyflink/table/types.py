@@ -27,12 +27,10 @@ from copy import copy
 from functools import reduce
 from threading import RLock
 
-from pyflink.util.utils import to_jarray
-from pyflink.java_gateway import get_gateway
+from py4j.java_gateway import get_java_class
 
-if sys.version >= '3':
-    long = int
-    basestring = unicode = str
+from pyflink.util.utils import to_jarray, is_instance_of
+from pyflink.java_gateway import get_gateway
 
 __all__ = ['DataTypes', 'UserDefinedType', 'Row']
 
@@ -56,11 +54,11 @@ class DataType(object):
     """
 
     def __init__(self, nullable=True):
-        self.nullable = nullable
-        self.conversion_cls = ''
+        self._nullable = nullable
+        self._conversion_cls = ''
 
     def __repr__(self):
-        return '%s(%s)' % (self.__class__.__name__, str(self.nullable).lower())
+        return '%s(%s)' % (self.__class__.__name__, str(self._nullable).lower())
 
     def __str__(self, *args, **kwargs):
         return self.__class__.type_name()
@@ -76,12 +74,12 @@ class DataType(object):
 
     def not_null(self):
         cp = copy(self)
-        cp.nullable = False
+        cp._nullable = False
         return cp
 
     def nullable(self):
         cp = copy(self)
-        cp.nullable = True
+        cp._nullable = True
         return cp
 
     @classmethod
@@ -95,7 +93,8 @@ class DataType(object):
 
         :param conversion_cls: the string representation of the conversion class
         """
-        self.conversion_cls = conversion_cls
+        self._conversion_cls = conversion_cls
+        return self
 
     def need_conversion(self):
         """
@@ -170,8 +169,8 @@ class CharType(AtomicType):
     """
     Char data type. SQL CHAR(n)
 
-    The serialized string representation is 'char(n)' where 'n' (default: 1) is the number of
-    bytes. 'n' must have a value between 1 and 255 (both inclusive).
+    The serialized string representation is ``char(n)`` where ``n`` (default: 1) is the number of
+    code points. ``n`` must have a value between 1 and 2147483647(0x7fffffff) (both inclusive).
 
     :param length: int, the string representation length.
     :param nullable: boolean, whether the type can be null (None) or not.
@@ -182,15 +181,16 @@ class CharType(AtomicType):
         self.length = length
 
     def __repr__(self):
-        return 'CharType(%d, %s)' % (self.length, str(self.nullable).lower())
+        return 'CharType(%d, %s)' % (self.length, str(self._nullable).lower())
 
 
 class VarCharType(AtomicType):
     """
     Varchar data type. SQL VARCHAR(n)
 
-    The serialized string representation is 'varchar(n)' where 'n' (default: 1) is the number of
-    characters. 'n' must have a value between 1 and 0x7fffffff (both inclusive).
+    The serialized string representation is ``varchar(n)`` where 'n' (default: 1) is the maximum
+    number of code points. 'n' must have a value between 1 and 2147483647(0x7fffffff)
+    (both inclusive).
 
     :param length: int, the maximum string representation length.
     :param nullable: boolean, whether the type can be null (None) or not.
@@ -201,15 +201,15 @@ class VarCharType(AtomicType):
         self.length = length
 
     def __repr__(self):
-        return "VarCharType(%d, %s)" % (self.length, str(self.nullable).lower())
+        return "VarCharType(%d, %s)" % (self.length, str(self._nullable).lower())
 
 
 class BinaryType(AtomicType):
     """
     Binary (byte array) data type. SQL BINARY(n)
 
-    The serialized string representation is 'binary(n)' where 'n' (default: 1) is the number of
-    bytes. 'n' must have a value between 1 and 0x7fffffff (both inclusive).
+    The serialized string representation is ``binary(n)`` where ``n`` (default: 1) is the number of
+    bytes. ``n`` must have a value between 1 and 2147483647(0x7fffffff) (both inclusive).
 
     :param length: int, the number of bytes.
     :param nullable: boolean, whether the type can be null (None) or not.
@@ -220,15 +220,15 @@ class BinaryType(AtomicType):
         self.length = length
 
     def __repr__(self):
-        return "BinaryType(%d, %s)" % (self.length, str(self.nullable).lower())
+        return "BinaryType(%d, %s)" % (self.length, str(self._nullable).lower())
 
 
 class VarBinaryType(AtomicType):
     """
     Binary (byte array) data type. SQL VARBINARY(n)
 
-    The serialized string representation is 'varbinary(n)' where 'n' (default: 1) is the
-    maximum number of bytes. 'n' must have a value between 1 and 0x7fffffff (both inclusive).
+    The serialized string representation is ``varbinary(n)`` where ``n`` (default: 1) is the
+    maximum number of bytes. ``n`` must have a value between 1 and 0x7fffffff (both inclusive).
 
     :param length: int, the maximum number of bytes.
     :param nullable: boolean, whether the type can be null (None) or not.
@@ -239,7 +239,7 @@ class VarBinaryType(AtomicType):
         self.length = length
 
     def __repr__(self):
-        return "VarBinaryType(%d, %s)" % (self.length, str(self.nullable).lower())
+        return "VarBinaryType(%d, %s)" % (self.length, str(self._nullable).lower())
 
 
 class BooleanType(AtomicType):
@@ -332,7 +332,7 @@ class DecimalType(FractionalType):
     When create a DecimalType, the default precision and scale is (10, 0). When infer
     schema from decimal.Decimal objects, it will be DecimalType(38, 18).
 
-    :param precision: the maximum total number of digits (default: 10)
+    :param precision: the number of digits in a number (default: 10)
     :param scale: the number of digits on right side of dot. (default: 0)
     :param nullable: boolean, whether the field can be null (None) or not.
     """
@@ -346,7 +346,7 @@ class DecimalType(FractionalType):
         self.has_precision_info = True  # this is public API
 
     def __repr__(self):
-        return "DecimalType(%d, %d, %s)" % (self.precision, self.scale, str(self.nullable).lower())
+        return "DecimalType(%d, %d, %s)" % (self.precision, self.scale, str(self._nullable).lower())
 
 
 class DateType(AtomicType):
@@ -383,7 +383,7 @@ class TimeType(AtomicType):
     :param nullable: boolean, whether the field can be null (None) or not.
     """
 
-    EPOCH_ORDINAL = calendar.timegm(time.localtime(0)) * 10**6
+    EPOCH_ORDINAL = calendar.timegm(time.localtime(0)) * 10 ** 6
 
     def __init__(self, precision=0, nullable=True):
         super(TimeType, self).__init__(nullable)
@@ -391,61 +391,59 @@ class TimeType(AtomicType):
         self.precision = precision
 
     def __repr__(self):
-        return "TimeType(%s, %s)" % (self.precision, str(self.nullable).lower())
+        return "TimeType(%s, %s)" % (self.precision, str(self._nullable).lower())
 
     def need_conversion(self):
         return True
 
     def to_sql_type(self, t):
-        if t.tzinfo is not None:
-            offset = t.utcoffset()
-            offset = offset if offset else datetime.timedelta()
-            offset_microseconds =\
-                (offset.days * 86400 + offset.seconds) * 10 ** 6 + offset.microseconds
-        else:
-            offset_microseconds = self.EPOCH_ORDINAL
-        minutes = t.hour * 60 + t.minute
-        seconds = minutes * 60 + t.second
-        return seconds * 10**6 + t.microsecond - offset_microseconds
+        if t is not None:
+            if t.tzinfo is not None:
+                offset = t.utcoffset()
+                offset = offset if offset else datetime.timedelta()
+                offset_microseconds =\
+                    (offset.days * 86400 + offset.seconds) * 10 ** 6 + offset.microseconds
+            else:
+                offset_microseconds = self.EPOCH_ORDINAL
+            minutes = t.hour * 60 + t.minute
+            seconds = minutes * 60 + t.second
+            return seconds * 10 ** 6 + t.microsecond - offset_microseconds
 
     def from_sql_type(self, t):
         if t is not None:
-            seconds, microseconds = divmod(t, 10**6)
+            seconds, microseconds = divmod(t + self.EPOCH_ORDINAL, 10 ** 6)
             minutes, seconds = divmod(seconds, 60)
             hours, minutes = divmod(minutes, 60)
             return datetime.time(hours, minutes, seconds, microseconds)
 
 
-class TimestampKind(object):
-    """
-    Timestamp kind for the time attribute metadata to timestamps.
-    """
-    REGULAR = 0
-    ROWTIME = 1
-    PROCTIME = 2
-
-
 class TimestampType(AtomicType):
     """
-    Timestamp data type.  SQL TIMESTAMP
+    Timestamp data type. SQL TIMESTAMP WITHOUT TIME ZONE.
+
+    Consisting of ``year-month-day hour:minute:second[.fractional]`` with up to nanosecond
+    precision and values ranging from ``0000-01-01 00:00:00.000000000`` to
+    ``9999-12-31 23:59:59.999999999``. Compared to the SQL standard, leap seconds (23:59:60 and
+    23:59:61) are not supported.
+
+    This class does not store or represent a time-zone. Instead, it is a description of
+    the date, as used for birthdays, combined with the local time as seen on a wall clock.
+    It cannot represent an instant on the time-line without additional information
+    such as an offset or time-zone.
 
     The precision must be greater than or equal to 0 and less than or equal to 9.
 
-    :param kind, the time attribute metadata (default: TimestampKind.REGULAR)
     :param precision: int, the number of digits of fractional seconds (default: 6)
     :param nullable: boolean, whether the field can be null (None) or not.
     """
 
-    def __init__(self, kind=TimestampKind.REGULAR, precision=6, nullable=True):
+    def __init__(self, precision=6, nullable=True):
         super(TimestampType, self).__init__(nullable)
-        assert 0 <= kind <= 2
         assert 0 <= precision <= 9
-        self.kind = kind
         self.precision = precision
 
     def __repr__(self):
-        return "TimestampType(%s, %s, %s)" % (
-            self.kind, self.precision, str(self.nullable).lower())
+        return "TimestampType(%s, %s)" % (self.precision, str(self._nullable).lower())
 
     def need_conversion(self):
         return True
@@ -454,12 +452,435 @@ class TimestampType(AtomicType):
         if dt is not None:
             seconds = (calendar.timegm(dt.utctimetuple()) if dt.tzinfo
                        else time.mktime(dt.timetuple()))
-            return int(seconds) * 10**6 + dt.microsecond
+            return int(seconds) * 10 ** 6 + dt.microsecond
 
     def from_sql_type(self, ts):
         if ts is not None:
-            # using int to avoid precision loss in float
-            return datetime.datetime.fromtimestamp(ts // 10**6).replace(microsecond=ts % 10**6)
+            return datetime.datetime.fromtimestamp(ts // 10 ** 6).replace(microsecond=ts % 10 ** 6)
+
+
+class LocalZonedTimestampType(AtomicType):
+    """
+    Timestamp data type. SQL TIMESTAMP WITH LOCAL TIME ZONE.
+
+    Consisting of ``year-month-day hour:minute:second[.fractional] zone`` with up to nanosecond
+    precision and values ranging from ``0000-01-01 00:00:00.000000000 +14:59`` to
+    ``9999-12-31 23:59:59.999999999 -14:59``. Compared to the SQL standard, Leap seconds (23:59:60
+    and 23:59:61) are not supported.
+
+    The value will be stored internally as a long value which stores all date and time
+    fields, to a precision of nanoseconds, as well as the offset from UTC/Greenwich.
+
+    The precision must be greater than or equal to 0 and less than or equal to 9.
+
+    :param precision: int, the number of digits of fractional seconds (default: 6)
+    :param nullable: boolean, whether the field can be null (None) or not.
+    """
+
+    EPOCH_ORDINAL = calendar.timegm(time.localtime(0)) * 10 ** 6
+
+    def __init__(self, precision=6, nullable=True):
+        super(LocalZonedTimestampType, self).__init__(nullable)
+        assert 0 <= precision <= 9
+        self.precision = precision
+
+    def __repr__(self):
+        return "LocalZonedTimestampType(%s, %s)" % (self.precision, str(self._nullable).lower())
+
+    def need_conversion(self):
+        return True
+
+    def to_sql_type(self, dt):
+        if dt is not None:
+            seconds = (calendar.timegm(dt.utctimetuple()) if dt.tzinfo
+                       else time.mktime(dt.timetuple()))
+            return int(seconds) * 10 ** 6 + dt.microsecond + self.EPOCH_ORDINAL
+
+    def from_sql_type(self, ts):
+        if ts is not None:
+            ts = ts - self.EPOCH_ORDINAL
+            return datetime.datetime.fromtimestamp(ts // 10 ** 6).replace(microsecond=ts % 10 ** 6)
+
+
+class ZonedTimestampType(AtomicType):
+    """
+    Timestamp data type with time zone. SQL TIMESTAMP WITH TIME ZONE.
+
+    Consisting of ``year-month-day hour:minute:second[.fractional] zone`` with up to nanosecond
+    precision and values ranging from {@code 0000-01-01 00:00:00.000000000 +14:59} to
+    ``9999-12-31 23:59:59.999999999 -14:59``. Compared to the SQL standard, leap seconds (23:59:60
+    and 23:59:61) are not supported.
+
+    The value will be stored internally all date and time fields, to a precision of
+    nanoseconds, and a time-zone, with a zone offset used to handle ambiguous local date-times.
+
+    The precision must be greater than or equal to 0 and less than or equal to 9.
+
+    :param precision: int, the number of digits of fractional seconds (default: 6)
+    :param nullable: boolean, whether the field can be null (None) or not.
+    """
+
+    def __init__(self, precision=6, nullable=True):
+        super(ZonedTimestampType, self).__init__(nullable)
+        assert 0 <= precision <= 9
+        self.precision = precision
+
+    def __repr__(self):
+        return "ZonedTimestampType(%s, %s)" % (self.precision, str(self._nullable).lower())
+
+    def need_conversion(self):
+        return True
+
+    def to_sql_type(self, dt):
+        if dt is not None:
+            seconds = (calendar.timegm(dt.utctimetuple()) if dt.tzinfo
+                       else time.mktime(dt.timetuple()))
+            tzinfo = dt.tzinfo if dt.tzinfo else datetime.datetime.now(
+                datetime.timezone.utc).astimezone().tzinfo
+            offset = int(tzinfo.utcoffset(dt).total_seconds())
+            return int(seconds + offset) * 10 ** 6 + dt.microsecond, offset
+
+    def from_sql_type(self, zoned_ts):
+        if zoned_ts is not None:
+            from dateutil import tz
+            ts = zoned_ts[0] - zoned_ts[1] * 10 ** 6
+            tzinfo = tz.tzoffset(None, zoned_ts[1])
+            return datetime.datetime.fromtimestamp(ts // 10 ** 6, tz=tzinfo).replace(
+                microsecond=ts % 10 ** 6)
+
+
+class Resolution(object):
+    """
+    Helper class for defining the resolution of an interval.
+
+    :param unit: value defined in the constants of :class:`IntervalUnit`.
+    :param precision: the number of digits of years (=year precision) or the number of digits of
+                      days (=day precision) or the number of digits of fractional seconds (
+                      =fractional precision).
+    """
+
+    class IntervalUnit(object):
+        SECOND = 0
+        MINUTE = 1
+        HOUR = 2
+        DAY = 3
+        MONTH = 4
+        YEAR = 5
+
+    def __init__(self, unit, precision=-1):
+        self._unit = unit
+        self._precision = precision
+
+    @property
+    def unit(self):
+        return self._unit
+
+    @property
+    def precision(self):
+        return self._precision
+
+    def __str__(self):
+        return '%s(%s)' % (str(self._unit), str(self._precision))
+
+
+class YearMonthIntervalType(AtomicType):
+    """
+    Year-month interval types. The type must be parameterized to one of the following
+    resolutions: interval of years, interval of years to months, or interval of months.
+
+    An interval of year-month consists of ``+years-months`` with values ranging from ``-9999-11``
+    to ``+9999-11``. The value representation is the same for all types of resolutions. For
+    example, an interval of months of 50 is always represented in an interval-of-years-to-months
+    format (with default year precision): ``+04-02``.
+
+    :param resolution: value defined in the constants of :class:`YearMonthResolution`,
+                       representing one of the following resolutions: interval of years,
+                       interval of years to months, or interval of months.
+    :param precision: int, the number of digits of years, must have a value
+                      between 1 and 4 (both inclusive), default (2).
+    :param nullable: boolean, whether the field can be null (None) or not.
+    """
+
+    class YearMonthResolution(object):
+        """
+        Supported resolutions of :class:`YearMonthIntervalType`.
+        """
+        YEAR = 1
+        MONTH = 2
+        YEAR_TO_MONTH = 3
+
+    DEFAULT_PRECISION = 2
+
+    def __init__(self, resolution, precision=DEFAULT_PRECISION, nullable=True):
+        assert resolution == YearMonthIntervalType.YearMonthResolution.YEAR or \
+            resolution == YearMonthIntervalType.YearMonthResolution.MONTH or \
+            resolution == YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH
+        assert resolution != YearMonthIntervalType.YearMonthResolution.MONTH or \
+            precision == self.DEFAULT_PRECISION
+        assert 1 <= precision <= 4
+        self._resolution = resolution
+        self._precision = precision
+        super(YearMonthIntervalType, self).__init__(nullable)
+
+    @property
+    def resolution(self):
+        return self._resolution
+
+    @property
+    def precision(self):
+        return self._precision
+
+
+class DayTimeIntervalType(AtomicType):
+    """
+    Day-time interval types. The type must be parameterized to one of the following resolutions
+    with up to nanosecond precision: interval of days, interval of days to hours, interval of
+    days to minutes, interval of days to seconds, interval of hours, interval of hours to minutes,
+    interval of hours to seconds, interval of minutes, interval of minutes to seconds,
+    or interval of seconds.
+
+    An interval of day-time consists of ``+days hours:months:seconds.fractional`` with values
+    ranging from ``-999999 23:59:59.999999999`` to ``+999999 23:59:59.999999999``. The value
+    representation is the same for all types of resolutions. For example, an interval of seconds
+    of 70 is always represented in an interval-of-days-to-seconds format (with default precisions):
+    ``+00 00:01:10.000000``.
+
+    :param resolution: value defined in the constants of :class:`DayTimeResolution`,
+                       representing one of the following resolutions: interval of days, interval
+                       of days to hours, interval of days to minutes, interval of days to seconds,
+                       interval of hours, interval of hours to minutes, interval of hours to
+                       seconds, interval of minutes, interval of minutes to seconds, or interval
+                       of seconds.
+    :param day_precision: the number of digits of days, must have a value between 1 and 6 (both
+                          inclusive) (default 2).
+    :param fractional_precision: the number of digits of fractional seconds, must have a value
+                                 between 0 and 9 (both inclusive) (default 6).
+    """
+
+    class DayTimeResolution(object):
+        """
+        Supported resolutions of :class:`DayTimeIntervalType`.
+        """
+        DAY = 1
+        DAY_TO_HOUR = 2
+        DAY_TO_MINUTE = 3
+        DAY_TO_SECOND = 4
+        HOUR = 5
+        HOUR_TO_MINUTE = 6
+        HOUR_TO_SECOND = 7
+        MINUTE = 8
+        MINUTE_TO_SECOND = 9
+        SECOND = 10
+
+    DEFAULT_DAY_PRECISION = 2
+    DEFAULT_FRACTIONAL_PRECISION = 6
+
+    def __init__(self, resolution, day_precision=DEFAULT_DAY_PRECISION,
+                 fractional_precision=DEFAULT_FRACTIONAL_PRECISION, nullable=True):
+        assert resolution == DayTimeIntervalType.DayTimeResolution.DAY or \
+            resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR or \
+            resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE or \
+            resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND or \
+            resolution == DayTimeIntervalType.DayTimeResolution.HOUR or \
+            resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE or \
+            resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND or \
+            resolution == DayTimeIntervalType.DayTimeResolution.MINUTE or \
+            resolution == DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND or \
+            resolution == DayTimeIntervalType.DayTimeResolution.SECOND
+
+        assert not self._needs_default_day_precision(
+            resolution) or day_precision == self.DEFAULT_DAY_PRECISION
+        assert not self._needs_default_fractional_precision(
+            resolution) or fractional_precision == self.DEFAULT_FRACTIONAL_PRECISION
+        assert 1 <= day_precision <= 6
+        assert 0 <= fractional_precision <= 9
+        self._resolution = resolution
+        self._day_precision = day_precision
+        self._fractional_precision = fractional_precision
+        super(DayTimeIntervalType, self).__init__(nullable)
+
+    def need_conversion(self):
+        return True
+
+    def to_sql_type(self, timedelta):
+        if timedelta is not None:
+            return (timedelta.days * 86400 + timedelta.seconds) * 10 ** 6 + timedelta.microseconds
+
+    def from_sql_type(self, ts):
+        if ts is not None:
+            return datetime.timedelta(microseconds=ts)
+
+    @property
+    def resolution(self):
+        return self._resolution
+
+    @property
+    def day_precision(self):
+        return self._day_precision
+
+    @property
+    def fractional_precision(self):
+        return self._fractional_precision
+
+    @staticmethod
+    def _needs_default_day_precision(resolution):
+        if resolution == DayTimeIntervalType.DayTimeResolution.HOUR or \
+                resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE or \
+                resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND or \
+                resolution == DayTimeIntervalType.DayTimeResolution.MINUTE or \
+                resolution == DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND or \
+                resolution == DayTimeIntervalType.DayTimeResolution.SECOND:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def _needs_default_fractional_precision(resolution):
+        if resolution == DayTimeIntervalType.DayTimeResolution.DAY or \
+                resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR or \
+                resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE or \
+                resolution == DayTimeIntervalType.DayTimeResolution.HOUR or \
+                resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE or \
+                resolution == DayTimeIntervalType.DayTimeResolution.MINUTE:
+            return True
+        else:
+            return False
+
+
+_resolution_mappings = {
+    (Resolution.IntervalUnit.YEAR, None):
+        lambda p1, p2: YearMonthIntervalType(
+            YearMonthIntervalType.YearMonthResolution.YEAR, p1),
+    (Resolution.IntervalUnit.MONTH, None):
+        lambda p1, p2: YearMonthIntervalType(
+            YearMonthIntervalType.YearMonthResolution.MONTH),
+    (Resolution.IntervalUnit.YEAR, Resolution.IntervalUnit.MONTH):
+        lambda p1, p2: YearMonthIntervalType(
+            YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH),
+    (Resolution.IntervalUnit.DAY, None):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.DAY,
+            p1,
+            DayTimeIntervalType.DEFAULT_FRACTIONAL_PRECISION),
+    (Resolution.IntervalUnit.DAY, Resolution.IntervalUnit.HOUR):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR,
+            p1,
+            DayTimeIntervalType.DEFAULT_FRACTIONAL_PRECISION),
+    (Resolution.IntervalUnit.DAY, Resolution.IntervalUnit.MINUTE):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE,
+            p1,
+            DayTimeIntervalType.DEFAULT_FRACTIONAL_PRECISION),
+    (Resolution.IntervalUnit.DAY, Resolution.IntervalUnit.SECOND):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND, p1, p2),
+    (Resolution.IntervalUnit.HOUR, None):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.HOUR),
+    (Resolution.IntervalUnit.HOUR, Resolution.IntervalUnit.MINUTE):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE),
+    (Resolution.IntervalUnit.HOUR, Resolution.IntervalUnit.SECOND):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND,
+            DayTimeIntervalType.DEFAULT_DAY_PRECISION,
+            p2),
+    (Resolution.IntervalUnit.MINUTE, None):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.MINUTE),
+    (Resolution.IntervalUnit.MINUTE, Resolution.IntervalUnit.SECOND):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND,
+            DayTimeIntervalType.DEFAULT_DAY_PRECISION,
+            p2),
+    (Resolution.IntervalUnit.SECOND, None):
+        lambda p1, p2: DayTimeIntervalType(
+            DayTimeIntervalType.DayTimeResolution.SECOND,
+            DayTimeIntervalType.DEFAULT_DAY_PRECISION,
+            p1)
+}
+
+
+def _from_resolution(upper_resolution, lower_resolution=None):
+    """
+    Creates an interval type (YearMonthIntervalType or DayTimeIntervalType) from the
+    upper_resolution and lower_resolution.
+    """
+    lower_unit = None if lower_resolution is None else lower_resolution.unit
+    lower_precision = -1 if lower_resolution is None else lower_resolution.precision
+    interval_type_provider = _resolution_mappings[(upper_resolution.unit, lower_unit)]
+    if interval_type_provider is None:
+        raise ValueError(
+            "Unsupported interval definition '%s TO %s'. Please check the documentation for "
+            "supported combinations for year-month and day-time intervals."
+            % (upper_resolution, lower_resolution))
+
+    return interval_type_provider(upper_resolution.precision, lower_precision)
+
+
+def _from_java_interval_type(j_interval_type):
+    """
+    Creates an interval type from the specified Java interval type.
+
+    :param j_interval_type: the Java interval type.
+    :return: :class:`YearMonthIntervalType` or :class:`DayTimeIntervalType`.
+    """
+    gateway = get_gateway()
+    if is_instance_of(j_interval_type, gateway.jvm.YearMonthIntervalType):
+        resolution = j_interval_type.getResolution()
+        precision = j_interval_type.getYearPrecision()
+
+        def _from_java_year_month_resolution(j_resolution):
+            if j_resolution == gateway.jvm.YearMonthIntervalType.YearMonthResolution.YEAR:
+                return YearMonthIntervalType.YearMonthResolution.YEAR
+            elif j_resolution == gateway.jvm.YearMonthIntervalType.YearMonthResolution.MONTH:
+                return YearMonthIntervalType.YearMonthResolution.MONTH
+            else:
+                return YearMonthIntervalType.YearMonthResolution.YEAR_TO_MONTH
+
+        return YearMonthIntervalType(_from_java_year_month_resolution(resolution), precision)
+
+    else:
+        resolution = j_interval_type.getResolution()
+        day_precision = j_interval_type.getDayPrecision()
+        fractional_precision = j_interval_type.getFractionalPrecision()
+
+        def _from_java_day_time_resolution(j_resolution):
+            if j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.DAY:
+                return DayTimeIntervalType.DayTimeResolution.DAY
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR:
+                return DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE:
+                return DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND:
+                return DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.HOUR:
+                return DayTimeIntervalType.DayTimeResolution.HOUR
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE:
+                return DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND:
+                return DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.MINUTE:
+                return DayTimeIntervalType.DayTimeResolution.MINUTE
+            elif j_resolution == gateway.jvm.DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND:
+                return DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND
+            else:
+                return DayTimeIntervalType.DayTimeResolution.SECOND
+
+        return DayTimeIntervalType(
+            _from_java_day_time_resolution(resolution), day_precision, fractional_precision)
+
+
+_boxed_to_primitive_array_map = \
+    {'java.lang.Integer': '[I',
+     'java.lang.Long': '[J',
+     'java.lang.Byte': '[B',
+     'java.lang.Short': '[S',
+     'java.lang.Character': '[C',
+     'java.lang.Boolean': '[Z',
+     'java.lang.Float': '[F',
+     'java.lang.Double': '[D'}
 
 
 class ArrayType(DataType):
@@ -472,9 +893,9 @@ class ArrayType(DataType):
 
     def __init__(self, element_type, nullable=True):
         """
-        >>> ArrayType(VarCharType()) == ArrayType(VarCharType())
+        >>> ArrayType(VarCharType(100)) == ArrayType(VarCharType(100))
         True
-        >>> ArrayType(VarCharType()) == ArrayType(BigIntType())
+        >>> ArrayType(VarCharType(100)) == ArrayType(BigIntType())
         False
         """
         assert isinstance(element_type, DataType), \
@@ -483,7 +904,7 @@ class ArrayType(DataType):
         self.element_type = element_type
 
     def __repr__(self):
-        return "ArrayType(%s, %s)" % (repr(self.element_type), str(self.nullable).lower())
+        return "ArrayType(%s, %s)" % (repr(self.element_type), str(self._nullable).lower())
 
     def need_conversion(self):
         return self.element_type.need_conversion()
@@ -512,11 +933,11 @@ class MapType(DataType):
 
     def __init__(self, key_type, value_type, nullable=True):
         """
-        >>> (MapType(VarCharType(nullable=False), IntType())
-        ...        == MapType(VarCharType(nullable=False), IntType()))
+        >>> (MapType(VarCharType(100, nullable=False), IntType())
+        ...        == MapType(VarCharType(100, nullable=False), IntType()))
         True
-        >>> (MapType(VarCharType(nullable=False), IntType())
-        ...        == MapType(VarCharType(nullable=False), FloatType()))
+        >>> (MapType(VarCharType(100, nullable=False), IntType())
+        ...        == MapType(VarCharType(100, nullable=False), FloatType()))
         False
         """
         assert isinstance(key_type, DataType), \
@@ -529,7 +950,7 @@ class MapType(DataType):
 
     def __repr__(self):
         return "MapType(%s, %s, %s)" % (
-            repr(self.key_type), repr(self.value_type), str(self.nullable).lower())
+            repr(self.key_type), repr(self.value_type), str(self._nullable).lower())
 
     def need_conversion(self):
         return self.key_type.need_conversion() or self.value_type.need_conversion()
@@ -557,9 +978,9 @@ class MultisetType(DataType):
 
     def __init__(self, element_type, nullable=True):
         """
-        >>> MultisetType(VarCharType()) == MultisetType(VarCharType())
+        >>> MultisetType(VarCharType(100)) == MultisetType(VarCharType(100))
         True
-        >>> MultisetType(VarCharType()) == MultisetType(BigIntType())
+        >>> MultisetType(VarCharType(100)) == MultisetType(BigIntType())
         False
         """
         assert isinstance(element_type, DataType), \
@@ -568,7 +989,7 @@ class MultisetType(DataType):
         self.element_type = element_type
 
     def __repr__(self):
-        return "MultisetType(%s, %s)" % (repr(self.element_type), str(self.nullable).lower())
+        return "MultisetType(%s, %s)" % (repr(self.element_type), str(self._nullable).lower())
 
     def need_conversion(self):
         return self.element_type.need_conversion()
@@ -595,20 +1016,18 @@ class RowField(object):
 
     def __init__(self, name, data_type, description=None):
         """
-        >>> (RowField("f1", VarCharType())
-        ...      == RowField("f1", VarCharType()))
+        >>> (RowField("f1", VarCharType(100)) == RowField("f1", VarCharType(100)))
         True
-        >>> (RowField("f1", VarCharType())
-        ...      == RowField("f2", VarCharType()))
+        >>> (RowField("f1", VarCharType(100)) == RowField("f2", VarCharType(100)))
         False
         """
         assert isinstance(data_type, DataType), \
             "data_type %s should be an instance of %s" % (data_type, DataType)
-        assert isinstance(name, basestring), "field name %s should be string" % name
+        assert isinstance(name, str), "field name %s should be string" % name
         if not isinstance(name, str):
             name = name.encode('utf-8')
         if description is not None:
-            assert isinstance(description, basestring), \
+            assert isinstance(description, str), \
                 "description %s should be string" % description
             if not isinstance(description, str):
                 description = description.encode('utf-8')
@@ -644,22 +1063,21 @@ class RowType(DataType):
     Iterating a :class:`RowType` will iterate its :class:`RowField`\\s.
     A contained :class:`RowField` can be accessed by name or position.
 
-    >>> row1 = RowType([RowField("f1", VarCharType())])
+    >>> row1 = RowType([RowField("f1", VarCharType(100))])
     >>> row1["f1"]
-    RowField(f1, VarCharType(1))
+    RowField(f1, VarCharType(100))
     >>> row1[0]
-    RowField(f1, VarCharType(1))
+    RowField(f1, VarCharType(100))
     """
 
     def __init__(self, fields=None, nullable=True):
         """
-        >>> row1 = RowType([RowField("f1", VarCharType())])
-        >>> row2 = RowType([RowField("f1", VarCharType())])
+        >>> row1 = RowType([RowField("f1", VarCharType(100))])
+        >>> row2 = RowType([RowField("f1", VarCharType(100))])
         >>> row1 == row2
         True
-        >>> row1 = RowType([RowField("f1", VarCharType())])
-        >>> row2 = RowType([RowField("f1", VarCharType()),
-        ...     RowField("f2", IntType())])
+        >>> row1 = RowType([RowField("f1", VarCharType(100))])
+        >>> row2 = RowType([RowField("f1", VarCharType(100)), RowField("f2", IntType())])
         >>> row1 == row2
         False
         """
@@ -686,15 +1104,15 @@ class RowType(DataType):
             b) 2 parameters as (name, data_type). The data_type parameter may be either a String
                or a DataType object.
 
-        >>> row1 = RowType().add("f1", VarCharType()).add("f2", VarCharType())
-        >>> row2 = RowType([RowField("f1", VarCharType()), RowField("f2", VarCharType())])
+        >>> row1 = RowType().add("f1", VarCharType(100)).add("f2", VarCharType(100))
+        >>> row2 = RowType([RowField("f1", VarCharType(100)), RowField("f2", VarCharType(100))])
         >>> row1 == row2
         True
-        >>> row1 = RowType().add(RowField("f1", VarCharType()))
-        >>> row2 = RowType([RowField("f1", VarCharType())])
+        >>> row1 = RowType().add(RowField("f1", VarCharType(100)))
+        >>> row2 = RowType([RowField("f1", VarCharType(100))])
         >>> row1 == row2
         True
-        >>> row2 = RowType([RowField("f1", VarCharType())])
+        >>> row2 = RowType([RowField("f1", VarCharType(100))])
         >>> row1 == row2
         True
 
@@ -755,11 +1173,19 @@ class RowType(DataType):
         """
         Returns all field names in a list.
 
-        >>> row = RowType([RowField("f1", VarCharType())])
+        >>> row = RowType([RowField("f1", VarCharType(100))])
         >>> row.field_names()
         ['f1']
         """
         return list(self.names)
+
+    def field_types(self):
+        """
+        Returns all field types in a list.
+
+        .. versionadded:: 1.11.0
+        """
+        return list([f.data_type for f in self.fields])
 
     def need_conversion(self):
         # We need convert Row()/namedtuple into tuple()
@@ -890,15 +1316,9 @@ _type_mappings = {
     bytearray: VarBinaryType(0x7fffffff),
     decimal.Decimal: DecimalType(38, 18),
     datetime.date: DateType(),
-    datetime.datetime: TimestampType(),
+    datetime.datetime: LocalZonedTimestampType(),
     datetime.time: TimeType(),
 }
-
-if sys.version < "3":
-    _type_mappings.update({
-        unicode: VarCharType(0x7fffffff),
-        long: BigIntType(),
-    })
 
 # Mapping Python array types to Flink SQL types
 # We should be careful here. The size of these types in python depends on C
@@ -974,10 +1394,6 @@ for _typecode in _array_unsigned_int_typecode_ctype_mappings.keys():
 if sys.version_info[0] < 4:
     # it can be 16 bits or 32 bits depending on the platform
     _array_type_mappings['u'] = CharType(ctypes.sizeof(ctypes.c_wchar))
-
-# Type code 'c' are only available at python 2
-if sys.version_info[0] < 3:
-    _array_type_mappings['c'] = CharType(ctypes.sizeof(ctypes.c_char))
 
 
 def _infer_type(obj):
@@ -1197,7 +1613,7 @@ _primitive_array_element_types = {BooleanType, TinyIntType, SmallIntType, IntTyp
 
 def _to_java_type(data_type):
     """
-    Converts Python type to Java type.
+    Converts Python type to Java TypeInformation.
     """
 
     global _python_java_types_mapping
@@ -1216,35 +1632,81 @@ def _to_java_type(data_type):
                 BigIntType: Types.LONG(),
                 FloatType: Types.FLOAT(),
                 DoubleType: Types.DOUBLE(),
-                DecimalType: Types.DECIMAL(),
                 DateType: Types.SQL_DATE(),
-                TimeType: Types.SQL_TIME(),
-                TimestampType: Types.SQL_TIMESTAMP(),
-                CharType: Types.STRING(),
-                VarCharType: Types.STRING(),
-                BinaryType: Types.PRIMITIVE_ARRAY(Types.BYTE()),
-                VarBinaryType: Types.PRIMITIVE_ARRAY(Types.BYTE())
             }
 
-    # NullType
-    if isinstance(data_type, NullType):
-        # null type is still not supported in Java
-        raise NotImplementedError
-
     # basic types
-    elif type(data_type) in _python_java_types_mapping:
+    if type(data_type) in _python_java_types_mapping:
         return _python_java_types_mapping[type(data_type)]
+
+    # DecimalType
+    elif isinstance(data_type, DecimalType):
+        if data_type.precision == 38 and data_type.scale == 18:
+            return Types.DECIMAL()
+        else:
+            raise TypeError("The precision must be 38 and the scale must be 18 for DecimalType, "
+                            "got %s" % repr(data_type))
+
+    # TimeType
+    elif isinstance(data_type, TimeType):
+        if data_type.precision == 0:
+            return Types.SQL_TIME()
+        else:
+            raise TypeError("The precision must be 0 for TimeType, got %s" % repr(data_type))
+
+    # TimestampType
+    elif isinstance(data_type, TimestampType):
+        if data_type.precision == 3:
+            return Types.SQL_TIMESTAMP()
+        else:
+            raise TypeError("The precision must be 3 for TimestampType, got %s" % repr(data_type))
+
+    # LocalZonedTimestampType
+    elif isinstance(data_type, LocalZonedTimestampType):
+        if data_type.precision == 3:
+            return gateway.jvm.org.apache.flink.api.common.typeinfo.Types.INSTANT
+        else:
+            raise TypeError("The precision must be 3 for LocalZonedTimestampType, got %s"
+                            % repr(data_type))
+
+    # VarCharType
+    elif isinstance(data_type, VarCharType):
+        if data_type.length == 0x7fffffff:
+            return Types.STRING()
+        else:
+            raise TypeError("The length limit must be 0x7fffffff(2147483647) for VarCharType, "
+                            "got %s" % repr(data_type))
+
+    # VarBinaryType
+    elif isinstance(data_type, VarBinaryType):
+        if data_type.length == 0x7fffffff:
+            return Types.PRIMITIVE_ARRAY(Types.BYTE())
+        else:
+            raise TypeError("The length limit must be 0x7fffffff(2147483647) for VarBinaryType, "
+                            "got %s" % repr(data_type))
+
+    # YearMonthIntervalType
+    elif isinstance(data_type, YearMonthIntervalType):
+        if data_type.resolution == YearMonthIntervalType.YearMonthResolution.MONTH and \
+                data_type.precision == 2:
+            return Types.INTERVAL_MONTHS()
+        else:
+            raise TypeError("The resolution must be YearMonthResolution.MONTH and the precision "
+                            "must be 2 for YearMonthIntervalType, got %s" % repr(data_type))
+
+    # DayTimeIntervalType
+    elif isinstance(data_type, DayTimeIntervalType):
+        if data_type.resolution == DayTimeIntervalType.DayTimeResolution.SECOND and \
+                data_type.day_precision == 2 and data_type.fractional_precision == 3:
+            return Types.INTERVAL_MILLIS()
+        else:
+            raise TypeError("The resolution must be DayTimeResolution.SECOND, the day_precision "
+                            "must be 2 and the fractional_precision must be 3 for "
+                            "DayTimeIntervalType, got %s" % repr(data_type))
 
     # ArrayType
     elif isinstance(data_type, ArrayType):
-        if type(data_type.element_type) in _primitive_array_element_types:
-            return Types.PRIMITIVE_ARRAY(_to_java_type(data_type.element_type))
-        elif isinstance(data_type.element_type, VarCharType) or isinstance(
-                data_type.element_type, CharType):
-            return gateway.jvm.org.apache.flink.api.common.typeinfo.\
-                BasicArrayTypeInfo.STRING_ARRAY_TYPE_INFO
-        else:
-            return Types.OBJECT_ARRAY(_to_java_type(data_type.element_type))
+        return Types.OBJECT_ARRAY(_to_java_type(data_type.element_type))
 
     # MapType
     elif isinstance(data_type, MapType):
@@ -1265,12 +1727,243 @@ def _to_java_type(data_type):
     elif isinstance(data_type, UserDefinedType):
         if data_type.java_udt():
             return gateway.jvm.org.apache.flink.util.InstantiationUtil.instantiate(
-                gateway.jvm.Class.forName(data_type.java_udt()))
+                gateway.jvm.Class.forName(
+                    data_type.java_udt(),
+                    True,
+                    gateway.jvm.Thread.currentThread().getContextClassLoader()))
         else:
             return _to_java_type(data_type.sql_type())
 
     else:
-        raise TypeError("Not supported type: %s" % data_type)
+        raise TypeError("Not supported type: %s" % repr(data_type))
+
+
+def _from_java_type(j_data_type):
+    """
+    Converts Java TypeInformation to Python DataType.
+    """
+    gateway = get_gateway()
+
+    if is_instance_of(j_data_type, gateway.jvm.TypeInformation):
+        # input is TypeInformation
+        LegacyTypeInfoDataTypeConverter = \
+            gateway.jvm.org.apache.flink.table.types.utils.LegacyTypeInfoDataTypeConverter
+        java_data_type = LegacyTypeInfoDataTypeConverter.toDataType(j_data_type)
+    else:
+        # input is DataType
+        java_data_type = j_data_type
+
+    # Atomic Type with parameters.
+    if is_instance_of(java_data_type, gateway.jvm.AtomicDataType):
+        logical_type = java_data_type.getLogicalType()
+        if is_instance_of(logical_type, gateway.jvm.CharType):
+            data_type = DataTypes.CHAR(logical_type.getLength(), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.VarCharType):
+            data_type = DataTypes.VARCHAR(logical_type.getLength(), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.BinaryType):
+            data_type = DataTypes.BINARY(logical_type.getLength(), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.VarBinaryType):
+            data_type = DataTypes.VARBINARY(logical_type.getLength(), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.DecimalType):
+            data_type = DataTypes.DECIMAL(logical_type.getPrecision(),
+                                          logical_type.getScale(),
+                                          logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.DateType):
+            data_type = DataTypes.DATE(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.TimeType):
+            data_type = DataTypes.TIME(logical_type.getPrecision(), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.TimestampType):
+            data_type = DataTypes.TIMESTAMP(precision=3, nullable=logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.BooleanType):
+            data_type = DataTypes.BOOLEAN(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.TinyIntType):
+            data_type = DataTypes.TINYINT(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.SmallIntType):
+            data_type = DataTypes.SMALLINT(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.IntType):
+            data_type = DataTypes.INT(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.BigIntType):
+            data_type = DataTypes.BIGINT(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.FloatType):
+            data_type = DataTypes.FLOAT(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.DoubleType):
+            data_type = DataTypes.DOUBLE(logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.ZonedTimestampType):
+            raise \
+                TypeError("Unsupported type: %s, ZonedTimestampType is not supported yet."
+                          % j_data_type)
+        elif is_instance_of(logical_type, gateway.jvm.LocalZonedTimestampType):
+            data_type = DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(nullable=logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.DayTimeIntervalType) or \
+                is_instance_of(logical_type, gateway.jvm.YearMonthIntervalType):
+            data_type = _from_java_interval_type(logical_type)
+        elif is_instance_of(logical_type, gateway.jvm.LegacyTypeInformationType):
+            type_info = logical_type.getTypeInformation()
+            BasicArrayTypeInfo = gateway.jvm.org.apache.flink.api.common.typeinfo.\
+                BasicArrayTypeInfo
+            BasicTypeInfo = gateway.jvm.org.apache.flink.api.common.typeinfo.BasicTypeInfo
+            if type_info == BasicArrayTypeInfo.STRING_ARRAY_TYPE_INFO:
+                data_type = DataTypes.ARRAY(DataTypes.STRING())
+            elif type_info == BasicTypeInfo.BIG_DEC_TYPE_INFO:
+                data_type = DataTypes.DECIMAL(38, 18)
+            elif type_info.getClass() == \
+                get_java_class(gateway.jvm.org.apache.flink.table.runtime.typeutils
+                               .BigDecimalTypeInfo):
+                data_type = DataTypes.DECIMAL(type_info.precision(), type_info.scale())
+            else:
+                raise TypeError("Unsupported type: %s, it is recognized as a legacy type."
+                                % type_info)
+        else:
+            raise TypeError("Unsupported type: %s, it is not supported yet in current python type"
+                            " system" % j_data_type)
+
+        return data_type
+
+    # Array Type, MultiSet Type.
+    elif is_instance_of(java_data_type, gateway.jvm.CollectionDataType):
+        logical_type = java_data_type.getLogicalType()
+        element_type = java_data_type.getElementDataType()
+        if is_instance_of(logical_type, gateway.jvm.ArrayType):
+            data_type = DataTypes.ARRAY(_from_java_type(element_type), logical_type.isNullable())
+        elif is_instance_of(logical_type, gateway.jvm.MultisetType):
+            data_type = DataTypes.MULTISET(_from_java_type(element_type),
+                                           logical_type.isNullable())
+        else:
+            raise TypeError("Unsupported collection data type: %s" % j_data_type)
+
+        return data_type
+
+    # Map Type.
+    elif is_instance_of(java_data_type, gateway.jvm.KeyValueDataType):
+        logical_type = java_data_type.getLogicalType()
+        key_type = java_data_type.getKeyDataType()
+        value_type = java_data_type.getValueDataType()
+        if is_instance_of(logical_type, gateway.jvm.MapType):
+            data_type = DataTypes.MAP(
+                _from_java_type(key_type),
+                _from_java_type(value_type),
+                logical_type.isNullable())
+        else:
+            raise TypeError("Unsupported map data type: %s" % j_data_type)
+
+        return data_type
+
+    # Row Type.
+    elif is_instance_of(java_data_type, gateway.jvm.FieldsDataType):
+        logical_type = java_data_type.getLogicalType()
+        field_data_types = java_data_type.getChildren()
+        if is_instance_of(logical_type, gateway.jvm.RowType):
+            fields = [DataTypes.FIELD(name, _from_java_type(field_data_types[idx]))
+                      for idx, name in enumerate(logical_type.getFieldNames())]
+            data_type = DataTypes.ROW(fields, logical_type.isNullable())
+        else:
+            raise TypeError("Unsupported row data type: %s" % j_data_type)
+
+        return data_type
+
+    # Unrecognized type.
+    else:
+        TypeError("Unsupported data type: %s" % j_data_type)
+
+
+def _to_java_data_type(data_type: DataType):
+    """
+    Converts the specified Python DataType to Java DataType.
+    """
+    gateway = get_gateway()
+    JDataTypes = gateway.jvm.org.apache.flink.table.api.DataTypes
+
+    if isinstance(data_type, BooleanType):
+        j_data_type = JDataTypes.BOOLEAN()
+    elif isinstance(data_type, TinyIntType):
+        j_data_type = JDataTypes.TINYINT()
+    elif isinstance(data_type, SmallIntType):
+        j_data_type = JDataTypes.SMALLINT()
+    elif isinstance(data_type, IntType):
+        j_data_type = JDataTypes.INT()
+    elif isinstance(data_type, BigIntType):
+        j_data_type = JDataTypes.BIGINT()
+    elif isinstance(data_type, FloatType):
+        j_data_type = JDataTypes.FLOAT()
+    elif isinstance(data_type, DoubleType):
+        j_data_type = JDataTypes.DOUBLE()
+    elif isinstance(data_type, VarCharType):
+        j_data_type = JDataTypes.VARCHAR(data_type.length)
+    elif isinstance(data_type, CharType):
+        j_data_type = JDataTypes.CHAR(data_type.length)
+    elif isinstance(data_type, VarBinaryType):
+        j_data_type = JDataTypes.VARBINARY(data_type.length)
+    elif isinstance(data_type, BinaryType):
+        j_data_type = JDataTypes.BINARY(data_type.length)
+    elif isinstance(data_type, DecimalType):
+        j_data_type = JDataTypes.Decimal(data_type.precision, data_type.scale)
+    elif isinstance(data_type, DateType):
+        j_data_type = JDataTypes.DATE()
+    elif isinstance(data_type, TimeType):
+        j_data_type = JDataTypes.TIME(data_type.precision)
+    elif isinstance(data_type, TimestampType):
+        j_data_type = JDataTypes.TIMESTAMP(data_type.precision)
+    elif isinstance(data_type, LocalZonedTimestampType):
+        j_data_type = JDataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(data_type.precision)
+    elif isinstance(data_type, ZonedTimestampType):
+        j_data_type = JDataTypes.TIMESTAMP_WITH_TIME_ZONE(data_type.precision)
+    elif isinstance(data_type, ArrayType):
+        j_data_type = JDataTypes.ARRAY(_to_java_data_type(data_type.element_type))
+    elif isinstance(data_type, MapType):
+        j_data_type = JDataTypes.MAP(
+            _to_java_data_type(data_type.key_type),
+            _to_java_data_type(data_type.value_type))
+    elif isinstance(data_type, RowType):
+        fields = [JDataTypes.FIELD(f.name, _to_java_data_type(f.data_type))
+                  for f in data_type.fields]
+        j_data_type = JDataTypes.ROW(to_jarray(JDataTypes.Field, fields))
+    elif isinstance(data_type, MultisetType):
+        j_data_type = JDataTypes.MULTISET(_to_java_data_type(data_type.element_type))
+    elif isinstance(data_type, NullType):
+        j_data_type = JDataTypes.NULL()
+    elif isinstance(data_type, YearMonthIntervalType):
+        if data_type.resolution == YearMonthIntervalType.YearMonthResolution.YEAR:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.YEAR(data_type.precision))
+        elif data_type.resolution == YearMonthIntervalType.YearMonthResolution.MONTH:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.MONTH())
+        else:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.YEAR(data_type.precision),
+                                              JDataTypes.MONTH())
+    elif isinstance(data_type, DayTimeIntervalType):
+        if data_type.resolution == DayTimeIntervalType.DayTimeResolution.DAY:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.DAY(data_type.day_precision))
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_HOUR:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.DAY(data_type.day_precision),
+                                              JDataTypes.HOUR())
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_MINUTE:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.DAY(data_type.day_precision),
+                                              JDataTypes.MINUTE())
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.DAY_TO_SECOND:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.DAY(data_type.day_precision),
+                                              JDataTypes.SECOND(data_type.fractional_precision))
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.HOUR:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.HOUR())
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_MINUTE:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.HOUR(), JDataTypes.MINUTE())
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.HOUR_TO_SECOND:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.HOUR(),
+                                              JDataTypes.SECOND(data_type.fractional_precision))
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.MINUTE:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.MINUTE())
+        elif data_type.resolution == DayTimeIntervalType.DayTimeResolution.MINUTE_TO_SECOND:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.MINUTE(),
+                                              JDataTypes.SECOND(data_type.fractional_precision))
+        else:
+            j_data_type = JDataTypes.INTERVAL(JDataTypes.SECOND(data_type.fractional_precision))
+    else:
+        raise TypeError("Unsupported data type: %s" % data_type)
+
+    if data_type._nullable:
+        j_data_type = j_data_type.nullable()
+    else:
+        j_data_type = j_data_type.notNull()
+
+    return j_data_type
 
 
 def _create_row(fields, values):
@@ -1294,30 +1987,34 @@ class Row(tuple):
     a named argument to represent the value is None or missing. This should be
     explicitly set to None in this case.
 
-    >>> row = Row(name="Alice", age=11)
-    >>> row
-    Row(age=11, name='Alice')
-    >>> row['name'], row['age']
-    ('Alice', 11)
-    >>> row.name, row.age
-    ('Alice', 11)
-    >>> 'name' in row
-    True
-    >>> 'wrong_key' in row
-    False
+    ::
+
+        >>> row = Row(name="Alice", age=11)
+        >>> row
+        Row(age=11, name='Alice')
+        >>> row['name'], row['age']
+        ('Alice', 11)
+        >>> row.name, row.age
+        ('Alice', 11)
+        >>> 'name' in row
+        True
+        >>> 'wrong_key' in row
+        False
 
     Row can also be used to create another Row like class, then it
     could be used to create Row objects, such as
 
-    >>> Person = Row("name", "age")
-    >>> Person
-    <Row(name, age)>
-    >>> 'name' in Person
-    True
-    >>> 'wrong_key' in Person
-    False
-    >>> Person("Alice", 11)
-    Row(name='Alice', age=11)
+    ::
+
+        >>> Person = Row("name", "age")
+        >>> Person
+        <Row(name, age)>
+        >>> 'name' in Person
+        True
+        >>> 'wrong_key' in Person
+        False
+        >>> Person("Alice", 11)
+        Row(name='Alice', age=11)
     """
 
     def __new__(cls, *args, **kwargs):
@@ -1340,15 +2037,18 @@ class Row(tuple):
         """
         Returns as a dict.
 
-        :param recursive: turns the nested Row as dict (default: False).
+        Example:
+        ::
 
-        >>> Row(name="Alice", age=11).as_dict() == {'name': 'Alice', 'age': 11}
-        True
-        >>> row = Row(key=1, value=Row(name='a', age=2))
-        >>> row.as_dict() == {'key': 1, 'value': Row(age=2, name='a')}
-        True
-        >>> row.as_dict(True) == {'key': 1, 'value': {'name': 'a', 'age': 2}}
-        True
+            >>> Row(name="Alice", age=11).as_dict() == {'name': 'Alice', 'age': 11}
+            True
+            >>> row = Row(key=1, value=Row(name='a', age=2))
+            >>> row.as_dict() == {'key': 1, 'value': Row(age=2, name='a')}
+            True
+            >>> row.as_dict(True) == {'key': 1, 'value': {'name': 'a', 'age': 2}}
+            True
+
+        :param recursive: turns the nested Row as dict (default: False).
         """
         if not hasattr(self, "_fields"):
             raise TypeError("Cannot convert a Row class into dict")
@@ -1432,25 +2132,28 @@ class Row(tuple):
             return "Row(%s)" % ", ".join("%s=%r" % (k, v)
                                          for k, v in zip(self._fields, tuple(self)))
         else:
-            return "<Row(%s)>" % ", ".join(self)
+            return "<Row(%s)>" % ", ".join("%r" % field for field in self)
 
 
 _acceptable_types = {
     BooleanType: (bool,),
-    TinyIntType: (int, long),
-    SmallIntType: (int, long),
-    IntType: (int, long),
-    BigIntType: (int, long),
+    TinyIntType: (int,),
+    SmallIntType: (int,),
+    IntType: (int,),
+    BigIntType: (int,),
     FloatType: (float,),
     DoubleType: (float,),
     DecimalType: (decimal.Decimal,),
-    CharType: (str, unicode),
-    VarCharType: (str, unicode),
+    CharType: (str,),
+    VarCharType: (str,),
     BinaryType: (bytearray,),
     VarBinaryType: (bytearray,),
     DateType: (datetime.date, datetime.datetime),
     TimeType: (datetime.time,),
     TimestampType: (datetime.datetime,),
+    DayTimeIntervalType: (datetime.timedelta,),
+    LocalZonedTimestampType: (datetime.datetime,),
+    ZonedTimestampType: (datetime.datetime,),
     ArrayType: (list, tuple, array),
     MapType: (dict,),
     RowType: (tuple, list, dict),
@@ -1467,14 +2170,14 @@ def _create_type_verifier(data_type, name=None):
     float is not checked, so it will become infinity when cast to Java float if it overflows.
 
     >>> _create_type_verifier(RowType([]))(None)
-    >>> _create_type_verifier(VarCharType())("")
+    >>> _create_type_verifier(VarCharType(100))("")
     >>> _create_type_verifier(BigIntType())(0)
     >>> _create_type_verifier(ArrayType(SmallIntType()))(list(range(3)))
-    >>> _create_type_verifier(ArrayType(VarCharType()))(set()) # doctest: +IGNORE_EXCEPTION_DETAIL
+    >>> _create_type_verifier(ArrayType(VarCharType(10)))(set()) # doctest: +IGNORE_EXCEPTION_DETAIL
     Traceback (most recent call last):
         ...
     TypeError:...
-    >>> _create_type_verifier(MapType(VarCharType(), IntType()))({})
+    >>> _create_type_verifier(MapType(VarCharType(100), IntType()))({})
     >>> _create_type_verifier(RowType([]))(())
     >>> _create_type_verifier(RowType([]))([])
     >>> _create_type_verifier(RowType([]))([1]) # doctest: +IGNORE_EXCEPTION_DETAIL
@@ -1496,11 +2199,11 @@ def _create_type_verifier(data_type, name=None):
     Traceback (most recent call last):
         ...
     ValueError:...
-    >>> _create_type_verifier(MapType(VarCharType(), IntType()))({None: 1})
+    >>> _create_type_verifier(MapType(VarCharType(100), IntType()))({None: 1})
     Traceback (most recent call last):
         ...
     ValueError:...
-    >>> schema = RowType().add("a", IntType()).add("b", VarCharType(), False)
+    >>> schema = RowType().add("a", IntType()).add("b", VarCharType(100), False)
     >>> _create_type_verifier(schema)((1, None)) # doctest: +IGNORE_EXCEPTION_DETAIL
     Traceback (most recent call last):
         ...
@@ -1516,7 +2219,7 @@ def _create_type_verifier(data_type, name=None):
 
     def verify_nullability(obj):
         if obj is None:
-            if data_type.nullable:
+            if data_type._nullable:
                 return True
             else:
                 raise ValueError(new_msg("This field is not nullable, but got None"))
@@ -1673,96 +2376,582 @@ def _create_type_verifier(data_type, name=None):
     return verify
 
 
-class DataTypes(object):
+def create_arrow_schema(field_names, field_types):
+    """
+    Create an Arrow schema with the specified filed names and types.
+    """
+    import pyarrow as pa
+    fields = [pa.field(field_name, to_arrow_type(field_type), field_type._nullable)
+              for field_name, field_type in zip(field_names, field_types)]
+    return pa.schema(fields)
 
-    @classmethod
-    def NULL(cls):
+
+def from_arrow_type(arrow_type, nullable=True):
+    """
+    Convert Arrow type to Flink data type.
+    """
+    from pyarrow import types
+    if types.is_boolean(arrow_type):
+        return BooleanType(nullable)
+    elif types.is_int8(arrow_type):
+        return TinyIntType(nullable)
+    elif types.is_int16(arrow_type):
+        return SmallIntType(nullable)
+    elif types.is_int32(arrow_type):
+        return IntType(nullable)
+    elif types.is_int64(arrow_type):
+        return BigIntType(nullable)
+    elif types.is_float32(arrow_type):
+        return FloatType(nullable)
+    elif types.is_float64(arrow_type):
+        return DoubleType(nullable)
+    elif types.is_decimal(arrow_type):
+        return DecimalType(arrow_type.precision, arrow_type.scale, nullable)
+    elif types.is_string(arrow_type):
+        return VarCharType(0x7fffffff, nullable)
+    elif types.is_fixed_size_binary(arrow_type):
+        return BinaryType(arrow_type.byte_width, nullable)
+    elif types.is_binary(arrow_type):
+        return VarBinaryType(0x7fffffff, nullable)
+    elif types.is_date32(arrow_type):
+        return DateType(nullable)
+    elif types.is_time32(arrow_type):
+        if str(arrow_type) == 'time32[s]':
+            return TimeType(0, nullable)
+        else:
+            return TimeType(3, nullable)
+    elif types.is_time64(arrow_type):
+        if str(arrow_type) == 'time64[us]':
+            return TimeType(6, nullable)
+        else:
+            return TimeType(9, nullable)
+    elif types.is_timestamp(arrow_type):
+        if arrow_type.unit == 's':
+            return TimestampType(0, nullable)
+        elif arrow_type.unit == 'ms':
+            return TimestampType(3, nullable)
+        elif arrow_type.unit == 'us':
+            return TimestampType(6, nullable)
+        else:
+            return TimestampType(9, nullable)
+    elif types.is_list(arrow_type):
+        return ArrayType(from_arrow_type(arrow_type.value_type), nullable)
+    elif types.is_struct(arrow_type):
+        if any(types.is_struct(field.type) for field in arrow_type):
+            raise TypeError("Nested RowType is not supported in conversion from Arrow: " +
+                            str(arrow_type))
+        return RowType([RowField(field.name, from_arrow_type(field.type, field.nullable))
+                        for field in arrow_type])
+    else:
+        raise TypeError("Unsupported data type to convert to Arrow type: " + str(dt))
+
+
+def to_arrow_type(data_type):
+    """
+    Converts the specified Flink data type to pyarrow data type.
+    """
+    import pyarrow as pa
+    if type(data_type) == TinyIntType:
+        return pa.int8()
+    elif type(data_type) == SmallIntType:
+        return pa.int16()
+    elif type(data_type) == IntType:
+        return pa.int32()
+    elif type(data_type) == BigIntType:
+        return pa.int64()
+    elif type(data_type) == BooleanType:
+        return pa.bool_()
+    elif type(data_type) == FloatType:
+        return pa.float32()
+    elif type(data_type) == DoubleType:
+        return pa.float64()
+    elif type(data_type) == VarCharType:
+        return pa.utf8()
+    elif type(data_type) == VarBinaryType:
+        return pa.binary()
+    elif type(data_type) == DecimalType:
+        return pa.decimal128(data_type.precision, data_type.scale)
+    elif type(data_type) == DateType:
+        return pa.date32()
+    elif type(data_type) == TimeType:
+        if data_type.precision == 0:
+            return pa.time32('s')
+        elif 1 <= data_type.precision <= 3:
+            return pa.time32('ms')
+        elif 4 <= data_type.precision <= 6:
+            return pa.time64('us')
+        else:
+            return pa.time64('ns')
+    elif type(data_type) in [LocalZonedTimestampType, TimestampType]:
+        if data_type.precision == 0:
+            return pa.timestamp('s')
+        elif 1 <= data_type.precision <= 3:
+            return pa.timestamp('ms')
+        elif 4 <= data_type.precision <= 6:
+            return pa.timestamp('us')
+        else:
+            return pa.timestamp('ns')
+    elif type(data_type) == ArrayType:
+        if type(data_type.element_type) in [LocalZonedTimestampType, RowType]:
+            raise ValueError("%s is not supported to be used as the element type of ArrayType." %
+                             data_type.element_type)
+        return pa.list_(to_arrow_type(data_type.element_type))
+    elif type(data_type) == RowType:
+        for field in data_type:
+            if type(field.data_type) in [LocalZonedTimestampType, RowType]:
+                raise TypeError("%s is not supported to be used as the field type of RowType" %
+                                field.data_type)
+        fields = [pa.field(field.name, to_arrow_type(field.data_type), field.data_type._nullable)
+                  for field in data_type]
+        return pa.struct(fields)
+    else:
+        raise ValueError("field_type %s is not supported." % data_type)
+
+
+class DataTypes(object):
+    """
+    A :class:`DataType` can be used to declare input and/or output types of operations.
+    This class enumerates all supported data types of the Table & SQL API.
+    """
+
+    @staticmethod
+    def NULL():
+        """
+        Data type for representing untyped null (None) values. A null type has no
+        other value except null (None), thus, it can be cast to any nullable type.
+
+        This type helps in representing unknown types in API calls that use a null
+        (None) literal as well as bridging to formats such as JSON or Avro that
+        define such a type as well.
+
+        The null type is an extension to the SQL standard.
+
+        .. note:: `NullType` is still not supported yet.
+        """
         return NullType()
 
-    @classmethod
-    def CHAR(cls, length=1, nullable=True):
+    @staticmethod
+    def CHAR(length, nullable=True):
+        """
+        Data type of a fixed-length character string.
+
+        :param length: int, the string representation length. It must have a value
+                       between 1 and 2147483647(0x7fffffff) (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: `CharType` is still not supported yet.
+        """
         return CharType(length, nullable)
 
-    @classmethod
-    def VARCHAR(cls, length=1, nullable=True):
+    @staticmethod
+    def VARCHAR(length, nullable=True):
+        """
+        Data type of a variable-length character string.
+
+        :param length: int, the maximum string representation length. It must have a
+                       value between 1 and 2147483647(0x7fffffff) (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: The length limit must be 0x7fffffff(2147483647) currently.
+        .. seealso:: :func:`~DataTypes.STRING`
+        """
         return VarCharType(length, nullable)
 
-    @classmethod
-    def STRING(cls, nullable=True):
+    @staticmethod
+    def STRING(nullable=True):
+        """
+        Data type of a variable-length character string with defined maximum length.
+        This is a shortcut for ``DataTypes.VARCHAR(2147483647)``.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. seealso:: :func:`~DataTypes.VARCHAR`
+        """
         return DataTypes.VARCHAR(0x7fffffff, nullable)
 
-    @classmethod
-    def BOOLEAN(cls, nullable=True):
+    @staticmethod
+    def BOOLEAN(nullable=True):
+        """
+        Data type of a boolean with a (possibly) three-valued logic of
+        TRUE, FALSE, UNKNOWN.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return BooleanType(nullable)
 
-    @classmethod
-    def BINARY(cls, length=1, nullable=True):
+    @staticmethod
+    def BINARY(length, nullable=True):
+        """
+        Data type of a fixed-length binary string (=a sequence of bytes).
+
+        :param length: int, the number of bytes. It must have a value between
+                       1 and 2147483647(0x7fffffff) (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: `BinaryType` is still not supported yet.
+        """
         return BinaryType(length, nullable)
 
-    @classmethod
-    def VARBINARY(cls, length=1, nullable=True):
+    @staticmethod
+    def VARBINARY(length, nullable=True):
+        """
+        Data type of a variable-length binary string (=a sequence of bytes)
+
+        :param length: int, the maximum number of bytes. It must have a value
+                       between 1 and 2147483647(0x7fffffff) (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: The length limit must be 0x7fffffff(2147483647) currently.
+        .. seealso:: :func:`~DataTypes.BYTES`
+        """
         return VarBinaryType(length, nullable)
 
-    @classmethod
-    def BYTES(cls, nullable=True):
+    @staticmethod
+    def BYTES(nullable=True):
+        """
+        Data type of a variable-length binary string (=a sequence of bytes) with
+        defined maximum length. This is a shortcut for ``DataTypes.VARBINARY(2147483647)``.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. seealso:: :func:`~DataTypes.VARBINARY`
+        """
         return DataTypes.VARBINARY(0x7fffffff, nullable)
 
-    @classmethod
-    def DECIMAL(cls, precision=10, scale=0, nullable=True):
+    @staticmethod
+    def DECIMAL(precision, scale, nullable=True):
+        """
+        Data type of a decimal number with fixed precision and scale.
+
+        :param precision: the number of digits in a number. It must have a value
+                          between 1 and 38 (both inclusive).
+        :param scale: the number of digits on right side of dot. It must have
+                      a value between 0 and precision (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: The precision must be 38 and the scale must be 18 currently.
+        """
         return DecimalType(precision, scale, nullable)
 
-    @classmethod
-    def TINYINT(cls, nullable=True):
+    @staticmethod
+    def TINYINT(nullable=True):
+        """
+        Data type of a 1-byte signed integer with values from -128 to 127.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return TinyIntType(nullable)
 
-    @classmethod
-    def SMALLINT(cls, nullable=True):
+    @staticmethod
+    def SMALLINT(nullable=True):
+        """
+        Data type of a 2-byte signed integer with values from -32,768 to 32,767.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return SmallIntType(nullable)
 
-    @classmethod
-    def INT(cls, nullable=True):
+    @staticmethod
+    def INT(nullable=True):
+        """
+        Data type of a 2-byte signed integer with values from -2,147,483,648
+        to 2,147,483,647.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return IntType(nullable)
 
-    @classmethod
-    def BIGINT(cls, nullable=True):
+    @staticmethod
+    def BIGINT(nullable=True):
+        """
+        Data type of an 8-byte signed integer with values from
+        -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return BigIntType(nullable)
 
-    @classmethod
-    def FLOAT(cls, nullable=True):
+    @staticmethod
+    def FLOAT(nullable=True):
+        """
+        Data type of a 4-byte single precision floating point number.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return FloatType(nullable)
 
-    @classmethod
-    def DOUBLE(cls, nullable=True):
+    @staticmethod
+    def DOUBLE(nullable=True):
+        """
+        Data type of an 8-byte double precision floating point number.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return DoubleType(nullable)
 
-    @classmethod
-    def DATE(cls, nullable=True):
+    @staticmethod
+    def DATE(nullable=True):
+        """
+        Data type of a date consisting of year-month-day with values ranging
+        from ``0000-01-01`` to ``9999-12-31``.
+
+        Compared to the SQL standard, the range starts at year 0000.
+
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return DateType(nullable)
 
-    @classmethod
-    def TIME(cls, precision=0, nullable=True):
+    @staticmethod
+    def TIME(precision=0, nullable=True):
+        """
+        Data type of a time WITHOUT time zone.
+
+        An instance consists of hour:minute:second[.fractional with up to nanosecond
+        precision and values ranging from ``00:00:00.000000000`` to ``23:59:59.999999999``.
+
+        Compared to the SQL standard, leap seconds (23:59:60 and 23:59:61)
+        are not supported.
+
+        :param precision: int, the number of digits of fractional seconds. It must
+                          have a value between 0 and 9 (both inclusive).
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: The precision must be 0 currently.
+        """
         return TimeType(precision, nullable)
 
-    @classmethod
-    def TIMESTAMP(cls, kind=TimestampKind.REGULAR, precision=6, nullable=True):
-        return TimestampType(kind, precision, nullable)
+    @staticmethod
+    def TIMESTAMP(precision=6, nullable=True):
+        """
+        Data type of a timestamp WITHOUT time zone.
 
-    @classmethod
-    def ARRAY(cls, element_type, nullable=True):
+        An instance consists of year-month-day hour:minute:second[.fractional
+        with up to nanosecond precision and values ranging from
+        ``0000-01-01 00:00:00.000000000`` to ``9999-12-31 23:59:59.999999999``.
+
+        Compared to the SQL standard, leap seconds (``23:59:60`` and ``23:59:61``)
+        are not supported.
+
+        This class does not store or represent a time-zone. Instead, it is a description of
+        the date, as used for birthdays, combined with the local time as seen on a wall clock.
+        It cannot represent an instant on the time-line without additional information
+        such as an offset or time-zone.
+
+        :param precision: int, the number of digits of fractional seconds.
+                          It must have a value between 0 and 9 (both inclusive). (default: 6)
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: The precision must be 3 currently.
+        """
+        return TimestampType(precision, nullable)
+
+    @staticmethod
+    def TIMESTAMP_WITH_LOCAL_TIME_ZONE(precision=6, nullable=True):
+        """
+        Data type of a timestamp WITH LOCAL time zone.
+
+        An instance consists of year-month-day hour:minute:second[.fractional
+        with up to nanosecond precision and values ranging from
+        ``0000-01-01 00:00:00.000000000 +14:59`` to ``9999-12-31 23:59:59.999999999 -14:59``.
+
+        Compared to the SQL standard, leap seconds (``23:59:60`` and ``23:59:61``)
+        are not supported.
+
+        The value will be stored internally as a long value which stores all date and time
+        fields, to a precision of nanoseconds, as well as the offset from UTC/Greenwich.
+
+        :param precision: int, the number of digits of fractional seconds.
+                          It must have a value between 0 and 9 (both inclusive). (default: 6)
+        :param nullable: boolean, whether the type can be null (None) or not.
+
+        .. note:: `LocalZonedTimestampType` is currently only supported in blink planner and the
+                  precision must be 3.
+        """
+        return LocalZonedTimestampType(precision, nullable)
+
+    @staticmethod
+    def ARRAY(element_type, nullable=True):
+        """
+        Data type of an array of elements with same subtype.
+
+        Compared to the SQL standard, the maximum cardinality of an array cannot
+        be specified but is fixed at 2147483647(0x7fffffff). Also, any valid
+        type is supported as a subtype.
+
+        :param element_type: :class:`DataType` of each element in the array.
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return ArrayType(element_type, nullable)
 
-    @classmethod
-    def MAP(cls, key_type, value_type, nullable=True):
+    @staticmethod
+    def MAP(key_type, value_type, nullable=True):
+        """
+        Data type of an associative array that maps keys to values. A map
+        cannot contain duplicate keys; each key can map to at most one value.
+
+        There is no restriction of key types; it is the responsibility of the
+        user to ensure uniqueness. The map type is an extension to the SQL standard.
+
+        :param key_type: :class:`DataType` of the keys in the map.
+        :param value_type: :class:`DataType` of the values in the map.
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return MapType(key_type, value_type, nullable)
 
-    @classmethod
-    def MULTISET(cls, element_type, nullable=True):
+    @staticmethod
+    def MULTISET(element_type, nullable=True):
+        """
+        Data type of a multiset (=bag). Unlike a set, it allows for multiple
+        instances for each of its elements with a common subtype. Each unique
+        value is mapped to some multiplicity.
+
+        There is no restriction of element types; it is the responsibility
+        of the user to ensure uniqueness.
+
+        :param element_type: :class:`DataType` of each element in the multiset.
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return MultisetType(element_type, nullable)
 
-    @classmethod
-    def ROW(cls, row_fields=[], nullable=True):
+    @staticmethod
+    def ROW(row_fields=[], nullable=True):
+        """
+        Data type of a sequence of fields. A field consists of a field name,
+        field type, and an optional description. The most specific type of
+        a row of a table is a row type. In this case, each column of the row
+        corresponds to the field of the row type that has the same ordinal
+        position as the column.
+
+        Compared to the SQL standard, an optional field description simplifies
+        the handling with complex structures.
+
+        :param row_fields: a list of row field types which can be created via
+                           :func:`DataTypes.FIELD`.
+        :param nullable: boolean, whether the type can be null (None) or not.
+        """
         return RowType(row_fields, nullable)
 
-    @classmethod
-    def FIELD(cls, name, data_type, description=None):
+    @staticmethod
+    def FIELD(name, data_type, description=None):
+        """
+        Field definition with field name, data type, and a description.
+
+        :param name: string, name of the field.
+        :param data_type: :class:`DataType` of the field.
+        :param description: string, description of the field.
+        """
         return RowField(name, data_type, description)
+
+    @staticmethod
+    def SECOND(precision=DayTimeIntervalType.DEFAULT_FRACTIONAL_PRECISION):
+        """
+        Resolution in seconds and (possibly) fractional seconds.
+
+        :param precision: int, the number of digits of fractional seconds. It must have a value
+                          between 0 and 9 (both inclusive), (default: 6).
+        :return: the specified :class:`Resolution`.
+
+        .. note:: the precision must be 3 currently.
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.SECOND, precision)
+
+    @staticmethod
+    def MINUTE():
+        """
+        Resolution in minutes.
+
+        :return: the specified :class:`Resolution`.
+
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.MINUTE)
+
+    @staticmethod
+    def HOUR():
+        """
+        Resolution in hours.
+
+        :return: :class:`Resolution`
+
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.HOUR)
+
+    @staticmethod
+    def DAY(precision=DayTimeIntervalType.DEFAULT_DAY_PRECISION):
+        """
+        Resolution in days.
+
+        :param precision: int, the number of digits of days. It must have a value between 1 and
+                          6 (both inclusive), (default: 2).
+        :return: the specified :class:`Resolution`.
+
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.DAY, precision)
+
+    @staticmethod
+    def MONTH():
+        """
+        Resolution in months.
+
+        :return: the specified :class:`Resolution`.
+
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.MONTH)
+
+    @staticmethod
+    def YEAR(precision=YearMonthIntervalType.DEFAULT_PRECISION):
+        """
+        Resolution in years with 2 digits for the number of years by default.
+
+        :param precision: the number of digits of years. It must have a value between 1 and
+                          4 (both inclusive), (default 2).
+        :return: the specified :class:`Resolution`.
+
+        .. seealso:: :func:`~pyflink.table.DataTypes.INTERVAL`
+        """
+        return Resolution(Resolution.IntervalUnit.YEAR, precision)
+
+    @staticmethod
+    def INTERVAL(upper_resolution, lower_resolution=None):
+        """
+        Data type of a temporal interval. There are two types of temporal intervals: day-time
+        intervals with up to nanosecond granularity or year-month intervals with up to month
+        granularity.
+
+        An interval of day-time consists of ``+days hours:months:seconds.fractional`` with values
+        ranging from ``-999999 23:59:59.999999999`` to ``+999999 23:59:59.999999999``. The type
+        must be parameterized to one of the following resolutions: interval of days, interval of
+        days to hours, interval of days to minutes, interval of days to seconds, interval of hours,
+        interval of hours to minutes, interval of hours to seconds, interval of minutes,
+        interval of minutes to seconds, or interval of seconds. The value representation is the
+        same for all types of resolutions. For example, an interval of seconds of 70 is always
+        represented in an interval-of-days-to-seconds format (with default precisions):
+        ``+00 00:01:10.000000``.
+
+        An interval of year-month consists of ``+years-months`` with values ranging from
+        ``-9999-11`` to ``+9999-11``. The type must be parameterized to one of the following
+        resolutions: interval of years, interval of years to months, or interval of months. The
+        value representation is the same for all types of resolutions. For example, an interval
+        of months of 50 is always represented in an interval-of-years-to-months format (with
+        default year precision): ``+04-02``.
+
+        Examples: ``INTERVAL(DAY(2), SECOND(9))`` for a day-time interval or
+        ``INTERVAL(YEAR(4), MONTH())`` for a year-month interval.
+
+        :param upper_resolution: :class:`Resolution`, the upper resolution of the interval.
+        :param lower_resolution: :class:`Resolution`, the lower resolution of the interval.
+
+        .. note:: the upper_resolution must be `MONTH` for `YearMonthIntervalType`, `SECOND` for
+                  `DayTimeIntervalType` and the lower_resolution must be None currently.
+        .. seealso:: :func:`~pyflink.table.DataTypes.SECOND`
+        .. seealso:: :func:`~pyflink.table.DataTypes.MINUTE`
+        .. seealso:: :func:`~pyflink.table.DataTypes.HOUR`
+        .. seealso:: :func:`~pyflink.table.DataTypes.DAY`
+        .. seealso:: :func:`~pyflink.table.DataTypes.MONTH`
+        .. seealso:: :func:`~pyflink.table.DataTypes.YEAR`
+        """
+        return _from_resolution(upper_resolution, lower_resolution)

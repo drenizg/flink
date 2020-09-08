@@ -29,6 +29,7 @@ import org.apache.flink.runtime.util.ClassLoaderUtil;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.collector.selector.OutputSelector;
+import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
@@ -44,6 +45,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Internal configuration for a {@link StreamOperator}. This is created and populated by the
@@ -58,8 +63,11 @@ public class StreamConfig implements Serializable {
 	//  Config Keys
 	// ------------------------------------------------------------------------
 
+	@VisibleForTesting
+	public static final String SERIALIZEDUDF = "serializedUDF";
+
 	private static final String NUMBER_OF_OUTPUTS = "numberOfOutputs";
-	private static final String NUMBER_OF_INPUTS = "numberOfInputs";
+	private static final String NUMBER_OF_NETWORK_INPUTS = "numberOfNetworkInputs";
 	private static final String CHAINED_OUTPUTS = "chainedOutputs";
 	private static final String CHAINED_TASK_CONFIG = "chainedTaskConfig_";
 	private static final String IS_CHAINED_VERTEX = "isChainedSubtask";
@@ -67,16 +75,12 @@ public class StreamConfig implements Serializable {
 	private static final String VERTEX_NAME = "vertexID";
 	private static final String ITERATION_ID = "iterationId";
 	private static final String OUTPUT_SELECTOR_WRAPPER = "outputSelectorWrapper";
-	private static final String SERIALIZEDUDF = "serializedUDF";
-	private static final String BUFFER_TIMEOUT = "bufferTimeout";
-	private static final String TYPE_SERIALIZER_IN_1 = "typeSerializer_in_1";
-	private static final String TYPE_SERIALIZER_IN_2 = "typeSerializer_in_2";
+	private static final String INPUTS = "inputs";
 	private static final String TYPE_SERIALIZER_OUT_1 = "typeSerializer_out";
 	private static final String TYPE_SERIALIZER_SIDEOUT_PREFIX = "typeSerializer_sideout_";
 	private static final String ITERATON_WAIT = "iterationWait";
 	private static final String NONCHAINED_OUTPUTS = "nonChainedOutputs";
 	private static final String EDGES_IN_ORDER = "edgesInOrder";
-	private static final String OUT_STREAM_EDGES = "outStreamEdges";
 	private static final String IN_STREAM_EDGES = "inStreamEdges";
 	private static final String OPERATOR_NAME = "operatorName";
 	private static final String OPERATOR_ID = "operatorID";
@@ -92,13 +96,15 @@ public class StreamConfig implements Serializable {
 
 	private static final String TIME_CHARACTERISTIC = "timechar";
 
+	private static final String MANAGED_MEMORY_FRACTION = "managedMemFraction";
+
 	// ------------------------------------------------------------------------
 	//  Default Values
 	// ------------------------------------------------------------------------
 
-	private static final long DEFAULT_TIMEOUT = 100;
 	private static final CheckpointingMode DEFAULT_CHECKPOINTING_MODE = CheckpointingMode.EXACTLY_ONCE;
 
+	private static final double DEFAULT_MANAGED_MEMORY_FRACTION = 0.0;
 
 	// ------------------------------------------------------------------------
 	//  Config
@@ -126,6 +132,18 @@ public class StreamConfig implements Serializable {
 		return config.getInteger(VERTEX_NAME, -1);
 	}
 
+	public void setManagedMemoryFraction(double managedMemFraction) {
+		checkArgument(
+			managedMemFraction >= 0.0 && managedMemFraction <= 1.0,
+			String.format("managedMemFraction should be in range [0.0, 1.0], but was: %s", managedMemFraction));
+
+		config.setDouble(MANAGED_MEMORY_FRACTION, managedMemFraction);
+	}
+
+	public double getManagedMemoryFraction() {
+		return config.getDouble(MANAGED_MEMORY_FRACTION, DEFAULT_MANAGED_MEMORY_FRACTION);
+	}
+
 	public void setTimeCharacteristic(TimeCharacteristic characteristic) {
 		config.setInteger(TIME_CHARACTERISTIC, characteristic.ordinal());
 	}
@@ -139,36 +157,8 @@ public class StreamConfig implements Serializable {
 		}
 	}
 
-	public void setTypeSerializerIn1(TypeSerializer<?> serializer) {
-		setTypeSerializer(TYPE_SERIALIZER_IN_1, serializer);
-	}
-
-	public void setTypeSerializerIn2(TypeSerializer<?> serializer) {
-		setTypeSerializer(TYPE_SERIALIZER_IN_2, serializer);
-	}
-
 	public void setTypeSerializerOut(TypeSerializer<?> serializer) {
 		setTypeSerializer(TYPE_SERIALIZER_OUT_1, serializer);
-	}
-
-	public void setTypeSerializerSideOut(OutputTag<?> outputTag, TypeSerializer<?> serializer) {
-		setTypeSerializer(TYPE_SERIALIZER_SIDEOUT_PREFIX + outputTag.getId(), serializer);
-	}
-
-	public <T> TypeSerializer<T> getTypeSerializerIn1(ClassLoader cl) {
-		try {
-			return InstantiationUtil.readObjectFromConfig(this.config, TYPE_SERIALIZER_IN_1, cl);
-		} catch (Exception e) {
-			throw new StreamTaskException("Could not instantiate serializer.", e);
-		}
-	}
-
-	public <T> TypeSerializer<T> getTypeSerializerIn2(ClassLoader cl) {
-		try {
-			return InstantiationUtil.readObjectFromConfig(this.config, TYPE_SERIALIZER_IN_2, cl);
-		} catch (Exception e) {
-			throw new StreamTaskException("Could not instantiate serializer.", e);
-		}
 	}
 
 	public <T> TypeSerializer<T> getTypeSerializerOut(ClassLoader cl) {
@@ -176,6 +166,18 @@ public class StreamConfig implements Serializable {
 			return InstantiationUtil.readObjectFromConfig(this.config, TYPE_SERIALIZER_OUT_1, cl);
 		} catch (Exception e) {
 			throw new StreamTaskException("Could not instantiate serializer.", e);
+		}
+	}
+
+	public void setTypeSerializerSideOut(OutputTag<?> outputTag, TypeSerializer<?> serializer) {
+		setTypeSerializer(TYPE_SERIALIZER_SIDEOUT_PREFIX + outputTag.getId(), serializer);
+	}
+
+	private void setTypeSerializer(String key, TypeSerializer<?> typeWrapper) {
+		try {
+			InstantiationUtil.writeObjectToConfig(typeWrapper, this.config, key);
+		} catch (IOException e) {
+			throw new StreamTaskException("Could not serialize type serializer.", e);
 		}
 	}
 
@@ -188,24 +190,49 @@ public class StreamConfig implements Serializable {
 		}
 	}
 
-	private void setTypeSerializer(String key, TypeSerializer<?> typeWrapper) {
+	public void setTypeSerializersIn(TypeSerializer<?> ...serializers) {
+		InputConfig[] inputs = new InputConfig[serializers.length];
+		for (int i = 0; i < serializers.length; i++) {
+			inputs[i] = new NetworkInputConfig(serializers[i], i);
+		}
+		setInputs(inputs);
+	}
+
+	public void setInputs(InputConfig...inputs) {
 		try {
-			InstantiationUtil.writeObjectToConfig(typeWrapper, this.config, key);
+			InstantiationUtil.writeObjectToConfig(inputs, this.config, INPUTS);
 		} catch (IOException e) {
-			throw new StreamTaskException("Could not serialize type serializer.", e);
+			throw new StreamTaskException("Could not serialize inputs.", e);
 		}
 	}
 
-	public void setBufferTimeout(long timeout) {
-		config.setLong(BUFFER_TIMEOUT, timeout);
+	public InputConfig[] getInputs(ClassLoader cl) {
+		try {
+			InputConfig[] inputs = InstantiationUtil.readObjectFromConfig(this.config, INPUTS, cl);
+			if (inputs == null) {
+				return new InputConfig[0];
+			}
+			return inputs;
+		} catch (Exception e) {
+			throw new StreamTaskException("Could not deserialize inputs", e);
+		}
 	}
 
-	public long getBufferTimeout() {
-		return config.getLong(BUFFER_TIMEOUT, DEFAULT_TIMEOUT);
+	@Deprecated
+	public <T> TypeSerializer<T> getTypeSerializerIn1(ClassLoader cl) {
+		return getTypeSerializerIn(0, cl);
 	}
 
-	public boolean isFlushAlwaysEnabled() {
-		return getBufferTimeout() == 0;
+	@Deprecated
+	public <T> TypeSerializer<T> getTypeSerializerIn2(ClassLoader cl) {
+		return getTypeSerializerIn(1, cl);
+	}
+
+	public <T> TypeSerializer<T> getTypeSerializerIn(int index, ClassLoader cl) {
+		InputConfig[] inputs = getInputs(cl);
+		checkState(index < inputs.length);
+		checkState(inputs[index] instanceof NetworkInputConfig, "Input [%s] was assumed to be network input", index);
+		return (TypeSerializer<T>) ((NetworkInputConfig) inputs[index]).typeSerializer;
 	}
 
 	@VisibleForTesting
@@ -286,12 +313,12 @@ public class StreamConfig implements Serializable {
 		return config.getLong(ITERATON_WAIT, 0);
 	}
 
-	public void setNumberOfInputs(int numberOfInputs) {
-		config.setInteger(NUMBER_OF_INPUTS, numberOfInputs);
+	public void setNumberOfNetworkInputs(int numberOfInputs) {
+		config.setInteger(NUMBER_OF_NETWORK_INPUTS, numberOfInputs);
 	}
 
-	public int getNumberOfInputs() {
-		return config.getInteger(NUMBER_OF_INPUTS, 0);
+	public int getNumberOfNetworkInputs() {
+		return config.getInteger(NUMBER_OF_NETWORK_INPUTS, 0);
 	}
 
 	public void setNumberOfOutputs(int numberOfOutputs) {
@@ -336,23 +363,6 @@ public class StreamConfig implements Serializable {
 		}
 	}
 
-	public void setOutEdges(List<StreamEdge> outEdges) {
-		try {
-			InstantiationUtil.writeObjectToConfig(outEdges, this.config, OUT_STREAM_EDGES);
-		} catch (IOException e) {
-			throw new StreamTaskException("Cannot serialize outward edges.", e);
-		}
-	}
-
-	public List<StreamEdge> getOutEdges(ClassLoader cl) {
-		try {
-			List<StreamEdge> outEdges = InstantiationUtil.readObjectFromConfig(this.config, OUT_STREAM_EDGES, cl);
-			return outEdges == null ? new ArrayList<StreamEdge>() : outEdges;
-		} catch (Exception e) {
-			throw new StreamTaskException("Could not instantiate outputs.", e);
-		}
-	}
-
 	public void setInPhysicalEdges(List<StreamEdge> inEdges) {
 		try {
 			InstantiationUtil.writeObjectToConfig(inEdges, this.config, IN_STREAM_EDGES);
@@ -391,6 +401,18 @@ public class StreamConfig implements Serializable {
 		} else {
 			return DEFAULT_CHECKPOINTING_MODE;
 		}
+	}
+
+	public void setUnalignedCheckpointsEnabled(boolean enabled) {
+		config.setBoolean(ExecutionCheckpointingOptions.ENABLE_UNALIGNED, enabled);
+	}
+
+	public boolean isUnalignedCheckpointsEnabled() {
+		return config.getBoolean(ExecutionCheckpointingOptions.ENABLE_UNALIGNED, false);
+	}
+
+	public boolean isExactlyOnceCheckpointMode() {
+		return getCheckpointMode() == CheckpointingMode.EXACTLY_ONCE;
 	}
 
 	public void setOutEdgesInOrder(List<StreamEdge> outEdgeList) {
@@ -482,10 +504,6 @@ public class StreamConfig implements Serializable {
 		}
 	}
 
-	public byte[] getSerializedStateBackend() {
-		return this.config.getBytes(STATE_BACKEND, null);
-	}
-
 	public void setStatePartitioner(int input, KeySelector<?, ?> partitioner) {
 		try {
 			InstantiationUtil.writeObjectToConfig(partitioner, this.config, STATE_PARTITIONER + input);
@@ -549,7 +567,7 @@ public class StreamConfig implements Serializable {
 		builder.append("\n=======================");
 		builder.append("Stream Config");
 		builder.append("=======================");
-		builder.append("\nNumber of non-chained inputs: ").append(getNumberOfInputs());
+		builder.append("\nNumber of non-chained inputs: ").append(getNumberOfNetworkInputs());
 		builder.append("\nNumber of non-chained outputs: ").append(getNumberOfOutputs());
 		builder.append("\nOutput names: ").append(getNonChainedOutputs(cl));
 		builder.append("\nPartitioning:");
@@ -566,7 +584,6 @@ public class StreamConfig implements Serializable {
 		catch (Exception e) {
 			builder.append("\nOperator: Missing");
 		}
-		builder.append("\nBuffer timeout: ").append(getBufferTimeout());
 		builder.append("\nState Monitoring: ").append(isCheckpointingEnabled());
 		if (isChainStart() && getChainedOutputs(cl).size() > 0) {
 			builder.append("\n\n\n---------------------\nChained task configs\n---------------------\n");
@@ -574,5 +591,69 @@ public class StreamConfig implements Serializable {
 		}
 
 		return builder.toString();
+	}
+
+	/**
+	 * Interface representing chained inputs.
+	 */
+	public interface InputConfig extends Serializable {
+	}
+
+	/**
+	 * A representation of a Network {@link InputConfig}.
+	 */
+	public static class NetworkInputConfig implements InputConfig {
+		private final TypeSerializer<?> typeSerializer;
+		private int inputGateIndex;
+
+		public NetworkInputConfig(TypeSerializer<?> typeSerializer, int inputGateIndex) {
+			this.typeSerializer = typeSerializer;
+			this.inputGateIndex = inputGateIndex;
+		}
+
+		public TypeSerializer<?> getTypeSerializer() {
+			return typeSerializer;
+		}
+
+		public int getInputGateIndex() {
+			return inputGateIndex;
+		}
+	}
+
+	/**
+	 * A serialized representation of an input.
+	 */
+	public static class SourceInputConfig implements InputConfig {
+		private final StreamEdge inputEdge;
+
+		public SourceInputConfig(StreamEdge inputEdge) {
+			this.inputEdge = inputEdge;
+		}
+
+		public StreamEdge getInputEdge() {
+			return inputEdge;
+		}
+
+		@Override
+		public String toString() {
+			return inputEdge.toString();
+		}
+
+		@Override
+		public boolean equals(Object obj) {
+			if (obj == this) {
+				return true;
+			}
+			if (!(obj instanceof SourceInputConfig)) {
+				return false;
+			}
+			SourceInputConfig other = (SourceInputConfig) obj;
+			return Objects.equals(other.inputEdge, inputEdge);
+		}
+
+		@Override
+		public int hashCode() {
+			return inputEdge.hashCode();
+		}
 	}
 }

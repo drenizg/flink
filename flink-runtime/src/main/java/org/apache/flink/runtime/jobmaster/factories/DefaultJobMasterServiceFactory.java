@@ -21,8 +21,11 @@ package org.apache.flink.runtime.jobmaster.factories;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
+import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTrackerImpl;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmanager.OnCompletionActions;
+import org.apache.flink.runtime.jobmaster.DefaultExecutionDeploymentReconciler;
+import org.apache.flink.runtime.jobmaster.DefaultExecutionDeploymentTracker;
 import org.apache.flink.runtime.jobmaster.JobManagerSharedServices;
 import org.apache.flink.runtime.jobmaster.JobMaster;
 import org.apache.flink.runtime.jobmaster.JobMasterConfiguration;
@@ -31,6 +34,7 @@ import org.apache.flink.runtime.jobmaster.slotpool.SchedulerFactory;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotPoolFactory;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.runtime.shuffle.ShuffleMaster;
 
 /**
  * Default implementation of the {@link JobMasterServiceFactory}.
@@ -57,6 +61,8 @@ public class DefaultJobMasterServiceFactory implements JobMasterServiceFactory {
 
 	private final SchedulerNGFactory schedulerNGFactory;
 
+	private final ShuffleMaster<?> shuffleMaster;
+
 	public DefaultJobMasterServiceFactory(
 			JobMasterConfiguration jobMasterConfiguration,
 			SlotPoolFactory slotPoolFactory,
@@ -67,7 +73,8 @@ public class DefaultJobMasterServiceFactory implements JobMasterServiceFactory {
 			HeartbeatServices heartbeatServices,
 			JobManagerJobMetricGroupFactory jobManagerJobMetricGroupFactory,
 			FatalErrorHandler fatalErrorHandler,
-			SchedulerNGFactory schedulerNGFactory) {
+			SchedulerNGFactory schedulerNGFactory,
+			ShuffleMaster<?> shuffleMaster) {
 		this.jobMasterConfiguration = jobMasterConfiguration;
 		this.slotPoolFactory = slotPoolFactory;
 		this.schedulerFactory = schedulerFactory;
@@ -78,6 +85,7 @@ public class DefaultJobMasterServiceFactory implements JobMasterServiceFactory {
 		this.jobManagerJobMetricGroupFactory = jobManagerJobMetricGroupFactory;
 		this.fatalErrorHandler = fatalErrorHandler;
 		this.schedulerNGFactory = schedulerNGFactory;
+		this.shuffleMaster = shuffleMaster;
 	}
 
 	@Override
@@ -100,6 +108,14 @@ public class DefaultJobMasterServiceFactory implements JobMasterServiceFactory {
 			jobCompletionActions,
 			fatalErrorHandler,
 			userCodeClassloader,
-			schedulerNGFactory);
+			schedulerNGFactory,
+			shuffleMaster,
+			lookup -> new JobMasterPartitionTrackerImpl(
+				jobGraph.getJobID(),
+				shuffleMaster,
+				lookup
+			),
+			new DefaultExecutionDeploymentTracker(),
+			DefaultExecutionDeploymentReconciler::new);
 	}
 }

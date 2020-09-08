@@ -19,12 +19,12 @@
 package org.apache.flink.table.types.logical;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Logical type of a fixed-length binary string (=a sequence of bytes).
@@ -49,9 +49,7 @@ public final class BinaryType extends LogicalType {
 
 	private static final String FORMAT = "BINARY(%d)";
 
-	private static final Set<String> INPUT_OUTPUT_CONVERSION = conversionSet(
-		byte[].class.getName(),
-		"org.apache.flink.table.dataformat.BinaryArray");
+	private static final Class<?> INPUT_OUTPUT_CONVERSION = byte[].class;
 
 	private static final Class<?> DEFAULT_CONVERSION = byte[].class;
 
@@ -91,6 +89,8 @@ public final class BinaryType extends LogicalType {
 	 * For consistent behavior, the same logic applies to binary strings.
 	 *
 	 * <p>This method enables this special kind of binary string.
+	 *
+	 * <p>Zero-length binary strings have no serializable string representation.
 	 */
 	public static BinaryType ofEmptyLiteral() {
 		return new BinaryType(EMPTY_LITERAL_LENGTH, false);
@@ -107,17 +107,26 @@ public final class BinaryType extends LogicalType {
 
 	@Override
 	public String asSerializableString() {
+		if (length == EMPTY_LITERAL_LENGTH) {
+			throw new TableException(
+				"Zero-length binary strings have no serializable string representation.");
+		}
+		return withNullability(FORMAT, length);
+	}
+
+	@Override
+	public String asSummaryString() {
 		return withNullability(FORMAT, length);
 	}
 
 	@Override
 	public boolean supportsInputConversion(Class<?> clazz) {
-		return INPUT_OUTPUT_CONVERSION.contains(clazz.getName());
+		return INPUT_OUTPUT_CONVERSION == clazz;
 	}
 
 	@Override
 	public boolean supportsOutputConversion(Class<?> clazz) {
-		return INPUT_OUTPUT_CONVERSION.contains(clazz.getName());
+		return INPUT_OUTPUT_CONVERSION == clazz;
 	}
 
 	@Override

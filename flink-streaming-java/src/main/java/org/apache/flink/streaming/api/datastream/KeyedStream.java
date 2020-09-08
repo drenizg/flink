@@ -22,9 +22,7 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.FoldFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.common.state.FoldingStateDescriptor;
 import org.apache.flink.api.common.state.ReducingStateDescriptor;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
@@ -32,6 +30,7 @@ import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.Utils;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.typeutils.EnumTypeInfo;
 import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.java.typeutils.TupleTypeInfoBase;
@@ -49,9 +48,8 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.graph.StreamGraphGenerator;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.api.operators.LegacyKeyedProcessOperator;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.StreamGroupedFold;
 import org.apache.flink.streaming.api.operators.StreamGroupedReduce;
+import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.co.IntervalJoinOperator;
 import org.apache.flink.streaming.api.transformations.OneInputTransformation;
 import org.apache.flink.streaming.api.transformations.PartitionTransformation;
@@ -87,7 +85,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * {@code DataStream} are also possible on a {@code KeyedStream}, with the exception of
  * partitioning methods such as shuffle, forward and keyBy.
  *
- * <p>Reduce-style operations, such as {@link #reduce}, {@link #sum} and {@link #fold} work on
+ * <p>Reduce-style operations, such as {@link #reduce}, and {@link #sum} work on
  * elements that have the same key.
  *
  * @param <T> The type of the elements in the Keyed Stream.
@@ -210,6 +208,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 	 *     the {@link Object#hashCode()} implementation.</li>
 	 *     <li>it is an array of any type (see {@link PrimitiveArrayTypeInfo}, {@link BasicArrayTypeInfo},
 	 *     {@link ObjectArrayTypeInfo}).</li>
+	 *     <li>it is enum type</li>
 	 * </ol>,
 	 * {@code true} otherwise.
 	 */
@@ -217,11 +216,19 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 		try {
 			return (type instanceof PojoTypeInfo)
 					? !type.getTypeClass().getMethod("hashCode").getDeclaringClass().equals(Object.class)
-					: !(type instanceof PrimitiveArrayTypeInfo || type instanceof BasicArrayTypeInfo || type instanceof ObjectArrayTypeInfo);
+					: !(isArrayType(type) || isEnumType(type));
 		} catch (NoSuchMethodException ignored) {
 			// this should never happen as we are just searching for the hashCode() method.
 		}
 		return false;
+	}
+
+	private static boolean isArrayType(TypeInformation<?> type) {
+		return type instanceof PrimitiveArrayTypeInfo || type instanceof BasicArrayTypeInfo || type instanceof ObjectArrayTypeInfo;
+	}
+
+	private static boolean isEnumType(TypeInformation<?> type) {
+		return type instanceof EnumTypeInfo;
 	}
 
 	// ------------------------------------------------------------------------
@@ -256,11 +263,12 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 	// ------------------------------------------------------------------------
 
 	@Override
-	@PublicEvolving
-	public <R> SingleOutputStreamOperator<R> transform(String operatorName,
-			TypeInformation<R> outTypeInfo, OneInputStreamOperator<T, R> operator) {
+	protected <R> SingleOutputStreamOperator<R> doTransform(
+			final String operatorName,
+			final TypeInformation<R> outTypeInfo,
+			final StreamOperatorFactory<R> operatorFactory) {
 
-		SingleOutputStreamOperator<R> returnStream = super.transform(operatorName, outTypeInfo, operator);
+		SingleOutputStreamOperator<R> returnStream = super.doTransform(operatorName, outTypeInfo, operatorFactory);
 
 		// inject the key selector and key type
 		OneInputTransformation<T, R> transform = (OneInputTransformation<T, R>) returnStream.getTransformation();
@@ -693,30 +701,6 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 	}
 
 	/**
-	 * Applies a fold transformation on the grouped data stream grouped on by
-	 * the given key position. The {@link FoldFunction} will receive input
-	 * values based on the key value. Only input values with the same key will
-	 * go to the same folder.
-	 *
-	 * @param folder
-	 *            The {@link FoldFunction} that will be called for every element
-	 *            of the input values with the same key.
-	 * @param initialValue
-	 *            The initialValue passed to the folders for each key.
-	 * @return The transformed DataStream.
-	 *
-	 * @deprecated will be removed in a future version
-	 */
-	@Deprecated
-	public <R> SingleOutputStreamOperator<R> fold(R initialValue, FoldFunction<T, R> folder) {
-
-		TypeInformation<R> outType = TypeExtractor.getFoldReturnTypes(
-				clean(folder), getType(), Utils.getCallLocationName(), true);
-
-		return transform("Keyed Fold", outType, new StreamGroupedFold<>(clean(folder), initialValue));
-	}
-
-	/**
 	 * Applies an aggregation that gives a rolling sum of the data stream at the
 	 * given position grouped by the given key. An independent aggregate is kept
 	 * per key.
@@ -793,7 +777,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 	 * per key.
 	 *
 	 * @param positionToMax
-	 *            The field position in the data points to minimize. This is applicable to
+	 *            The field position in the data points to maximize. This is applicable to
 	 *            Tuple types, Scala case classes, and primitive types (which is considered
 	 *            as having one field).
 	 * @return The transformed DataStream.
@@ -1024,33 +1008,6 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 		transform("Queryable state: " + queryableStateName,
 				getType(),
 				new QueryableValueStateOperator<>(queryableStateName, stateDescriptor));
-
-		stateDescriptor.initializeSerializerUnlessSet(getExecutionConfig());
-
-		return new QueryableStateStream<>(
-				queryableStateName,
-				stateDescriptor,
-				getKeyType().createSerializer(getExecutionConfig()));
-	}
-
-	/**
-	 * Publishes the keyed stream as a queryable FoldingState instance.
-	 *
-	 * @param queryableStateName Name under which to the publish the queryable state instance
-	 * @param stateDescriptor State descriptor to create state instance from
-	 * @return Queryable state instance
-	 *
-	 * @deprecated will be removed in a future version
-	 */
-	@PublicEvolving
-	@Deprecated
-	public <ACC> QueryableStateStream<KEY, ACC> asQueryableState(
-			String queryableStateName,
-			FoldingStateDescriptor<T, ACC> stateDescriptor) {
-
-		transform("Queryable state: " + queryableStateName,
-				getType(),
-				new QueryableAppendingStateOperator<>(queryableStateName, stateDescriptor));
 
 		stateDescriptor.initializeSerializerUnlessSet(getExecutionConfig());
 

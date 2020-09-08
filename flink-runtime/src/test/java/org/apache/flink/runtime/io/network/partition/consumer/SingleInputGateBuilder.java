@@ -18,26 +18,29 @@
 
 package org.apache.flink.runtime.io.network.partition.consumer;
 
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.metrics.Counter;
-import org.apache.flink.metrics.SimpleCounter;
-import org.apache.flink.runtime.io.network.NetworkEnvironment;
+import org.apache.flink.core.memory.MemorySegmentProvider;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
+import org.apache.flink.runtime.io.network.buffer.BufferDecompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
+import org.apache.flink.runtime.io.network.partition.InputChannelTestUtils;
+import org.apache.flink.runtime.io.network.partition.PartitionProducerStateProvider;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
-import org.apache.flink.runtime.taskmanager.NetworkEnvironmentConfiguration;
-import org.apache.flink.runtime.taskmanager.NoOpTaskActions;
-import org.apache.flink.runtime.taskmanager.TaskActions;
+import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
 import org.apache.flink.util.function.SupplierWithException;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.function.BiFunction;
+import java.util.stream.IntStream;
 
 /**
  * Utility class to encapsulate the logic of building a {@link SingleInputGate} instance.
  */
 public class SingleInputGateBuilder {
 
-	private final JobID jobId = new JobID();
+	public static final PartitionProducerStateProvider NO_OP_PRODUCER_CHECKER = (dsid, id, consumer) -> {};
 
 	private final IntermediateDataSetID intermediateDataSetID = new IntermediateDataSetID();
 
@@ -45,25 +48,42 @@ public class SingleInputGateBuilder {
 
 	private int consumedSubpartitionIndex = 0;
 
+	private int gateIndex = 0;
+
 	private int numberOfChannels = 1;
 
-	private final TaskActions taskActions = new NoOpTaskActions();
+	private PartitionProducerStateProvider partitionProducerStateProvider = NO_OP_PRODUCER_CHECKER;
 
-	private final Counter numBytesInCounter = new SimpleCounter();
+	private BufferDecompressor bufferDecompressor = null;
 
-	private boolean isCreditBased = true;
+	private MemorySegmentProvider segmentProvider = InputChannelTestUtils.StubMemorySegmentProvider.getInstance();
+
+	@Nullable
+	private BiFunction<InputChannelBuilder, SingleInputGate, InputChannel> channelFactory = null;
 
 	private SupplierWithException<BufferPool, IOException> bufferPoolFactory = () -> {
 		throw new UnsupportedOperationException();
 	};
+
+	public SingleInputGateBuilder setPartitionProducerStateProvider(
+		PartitionProducerStateProvider partitionProducerStateProvider) {
+
+		this.partitionProducerStateProvider = partitionProducerStateProvider;
+		return this;
+	}
 
 	public SingleInputGateBuilder setResultPartitionType(ResultPartitionType partitionType) {
 		this.partitionType = partitionType;
 		return this;
 	}
 
-	SingleInputGateBuilder setConsumedSubpartitionIndex(int consumedSubpartitionIndex) {
+	public SingleInputGateBuilder setConsumedSubpartitionIndex(int consumedSubpartitionIndex) {
 		this.consumedSubpartitionIndex = consumedSubpartitionIndex;
+		return this;
+	}
+
+	public SingleInputGateBuilder setSingleInputGateIndex(int gateIndex) {
+		this.gateIndex = gateIndex;
 		return this;
 	}
 
@@ -72,34 +92,59 @@ public class SingleInputGateBuilder {
 		return this;
 	}
 
-	public SingleInputGateBuilder setIsCreditBased(boolean isCreditBased) {
-		this.isCreditBased = isCreditBased;
-		return this;
-	}
-
-	public SingleInputGateBuilder setupBufferPoolFactory(NetworkEnvironment environment) {
-		NetworkEnvironmentConfiguration config = environment.getConfiguration();
+	public SingleInputGateBuilder setupBufferPoolFactory(NettyShuffleEnvironment environment) {
+		NettyShuffleEnvironmentConfiguration config = environment.getConfiguration();
 		this.bufferPoolFactory = SingleInputGateFactory.createBufferPoolFactory(
 			environment.getNetworkBufferPool(),
-			config.isCreditBased(),
 			config.networkBuffersPerChannel(),
 			config.floatingNetworkBuffersPerGate(),
 			numberOfChannels,
 			partitionType);
+		this.segmentProvider = environment.getNetworkBufferPool();
+		return this;
+	}
+
+	public SingleInputGateBuilder setBufferPoolFactory(BufferPool bufferPool) {
+		this.bufferPoolFactory = () -> bufferPool;
+		return this;
+	}
+
+	public SingleInputGateBuilder setBufferDecompressor(BufferDecompressor bufferDecompressor) {
+		this.bufferDecompressor = bufferDecompressor;
+		return this;
+	}
+
+	public SingleInputGateBuilder setSegmentProvider(MemorySegmentProvider segmentProvider) {
+		this.segmentProvider = segmentProvider;
+		return this;
+	}
+
+	/**
+	 * Adds automatic initialization of all channels with the given factory.
+	 */
+	public SingleInputGateBuilder setChannelFactory(
+			BiFunction<InputChannelBuilder, SingleInputGate, InputChannel> channelFactory) {
+		this.channelFactory = channelFactory;
 		return this;
 	}
 
 	public SingleInputGate build() {
-		return new SingleInputGate(
+		SingleInputGate gate = new SingleInputGate(
 			"Single Input Gate",
-			jobId,
+			gateIndex,
 			intermediateDataSetID,
 			partitionType,
 			consumedSubpartitionIndex,
 			numberOfChannels,
-			taskActions,
-			numBytesInCounter,
-			isCreditBased,
-			bufferPoolFactory);
+			partitionProducerStateProvider,
+			bufferPoolFactory,
+			bufferDecompressor,
+			segmentProvider);
+		if (channelFactory != null) {
+			gate.setInputChannels(IntStream.range(0, numberOfChannels)
+				.mapToObj(index -> channelFactory.apply(InputChannelBuilder.newBuilder().setChannelIndex(index), gate))
+				.toArray(InputChannel[]::new));
+		}
+		return gate;
 	}
 }

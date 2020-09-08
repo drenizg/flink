@@ -18,14 +18,14 @@
 
 package org.apache.flink.table.plan
 
-import org.apache.calcite.rel.rules.AggregateExpandDistinctAggregatesRule
-import org.apache.calcite.tools.RuleSets
 import org.apache.flink.api.scala._
-import org.apache.flink.table.api.PlannerConfig
-import org.apache.flink.table.api.scala._
+import org.apache.flink.table.api._
 import org.apache.flink.table.calcite.CalciteConfigBuilder
 import org.apache.flink.table.utils.TableTestBase
 import org.apache.flink.table.utils.TableTestUtil._
+
+import org.apache.calcite.rel.rules.AggregateExpandDistinctAggregatesRule
+import org.apache.calcite.tools.RuleSets
 import org.junit.Test
 
 class NormalizationRulesTest extends TableTestBase {
@@ -42,18 +42,20 @@ class NormalizationRulesTest extends TableTestBase {
         .build()
     util.tableEnv.getConfig.setPlannerConfig(cc)
 
-    util.addTable[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
+    val t = util.addTable[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
 
     val sqlQuery = "SELECT " +
       "COUNT(DISTINCT a)" +
       "FROM MyTable group by b"
+
+    val streamNode = batchTableNode(t).replace("DataSetScan", "FlinkLogicalDataSetScan")
 
     // expect double aggregate
     val expected = unaryNode("LogicalProject",
       unaryNode("LogicalAggregate",
         unaryNode("LogicalAggregate",
           unaryNode("LogicalProject",
-            values("LogicalTableScan", term("table", "[_DataSetTable_0]")),
+            streamNode,
             term("b", "$1"), term("a", "$0")),
           term("group", "{0, 1}")),
         term("group", "{0}"), term("EXPR$0", "COUNT($1)")
@@ -76,11 +78,13 @@ class NormalizationRulesTest extends TableTestBase {
         .build()
     util.tableEnv.getConfig.setPlannerConfig(cc)
 
-    util.addTable[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
+    val t = util.addTable[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
 
     val sqlQuery = "SELECT " +
       "COUNT(DISTINCT a)" +
       "FROM MyTable group by b"
+
+    val streamNode = streamTableNode(t).replace("DataStreamScan", "FlinkLogicalDataStreamScan")
 
     // expect double aggregate
     val expected = unaryNode(
@@ -88,7 +92,7 @@ class NormalizationRulesTest extends TableTestBase {
       unaryNode("LogicalAggregate",
         unaryNode("LogicalAggregate",
           unaryNode("LogicalProject",
-            values("LogicalTableScan", term("table", "[_DataStreamTable_0]")),
+            streamNode,
             term("b", "$1"), term("a", "$0")),
           term("group", "{0, 1}")),
         term("group", "{0}"), term("EXPR$0", "COUNT($1)")

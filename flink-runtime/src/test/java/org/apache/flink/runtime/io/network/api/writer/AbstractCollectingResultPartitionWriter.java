@@ -19,11 +19,11 @@
 package org.apache.flink.runtime.io.network.api.writer;
 
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
 import org.apache.flink.runtime.io.network.buffer.BufferProvider;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.MockResultPartitionWriter;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.IOException;
@@ -36,7 +36,7 @@ import static org.apache.flink.util.Preconditions.checkState;
  * {@link ResultPartitionWriter} that collects output on the List.
  */
 @ThreadSafe
-public abstract class AbstractCollectingResultPartitionWriter implements ResultPartitionWriter {
+public abstract class AbstractCollectingResultPartitionWriter extends MockResultPartitionWriter {
 	private final BufferProvider bufferProvider;
 	private final ArrayDeque<BufferConsumer> bufferConsumers = new ArrayDeque<>();
 
@@ -45,34 +45,24 @@ public abstract class AbstractCollectingResultPartitionWriter implements ResultP
 	}
 
 	@Override
-	public void setup() {
+	public BufferBuilder getBufferBuilder(int targetChannel) throws IOException, InterruptedException {
+		return bufferProvider.requestBufferBuilderBlocking(targetChannel);
 	}
 
 	@Override
-	public BufferProvider getBufferProvider() {
-		return bufferProvider;
+	public BufferBuilder tryGetBufferBuilder(int targetChannel) throws IOException {
+		return bufferProvider.requestBufferBuilder(targetChannel);
 	}
 
 	@Override
-	public ResultPartitionID getPartitionId() {
-		return new ResultPartitionID();
-	}
-
-	@Override
-	public int getNumberOfSubpartitions() {
-		return 1;
-	}
-
-	@Override
-	public int getNumTargetKeyGroups() {
-		return 1;
-	}
-
-	@Override
-	public synchronized void addBufferConsumer(BufferConsumer bufferConsumer, int targetChannel) throws IOException {
+	public synchronized boolean addBufferConsumer(
+			BufferConsumer bufferConsumer,
+			int targetChannel,
+			boolean isPriorityEvent) throws IOException {
 		checkState(targetChannel < getNumberOfSubpartitions());
 		bufferConsumers.add(bufferConsumer);
 		processBufferConsumers();
+		return true;
 	}
 
 	private void processBufferConsumers() throws IOException {
@@ -104,20 +94,6 @@ public abstract class AbstractCollectingResultPartitionWriter implements ResultP
 	@Override
 	public void flush(int subpartitionIndex) {
 		flushAll();
-	}
-
-	@Override
-	public void close() {
-	}
-
-	@Override
-	public void fail(@Nullable Throwable throwable) {
-		throw new UnsupportedOperationException();
-	}
-
-	@Override
-	public void finish() {
-		throw new UnsupportedOperationException();
 	}
 
 	protected abstract void deserializeBuffer(Buffer buffer) throws IOException;

@@ -19,150 +19,165 @@
 package org.apache.flink.runtime.io.network.partition;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
-import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
-import org.apache.flink.runtime.io.disk.iomanager.IOManager;
+import org.apache.flink.runtime.io.disk.FileChannelManager;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
+import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.buffer.BufferPoolFactory;
 import org.apache.flink.runtime.io.network.buffer.BufferPoolOwner;
-import org.apache.flink.runtime.taskmanager.TaskActions;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.ProcessorArchitecture;
 import org.apache.flink.util.function.FunctionWithException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nonnull;
-
+import java.io.File;
 import java.io.IOException;
-import java.util.Optional;
 
 /**
- * Factory for {@link ResultPartition} to use in {@link org.apache.flink.runtime.io.network.NetworkEnvironment}.
+ * Factory for {@link ResultPartition} to use in {@link NettyShuffleEnvironment}.
  */
 public class ResultPartitionFactory {
-	private static final Logger LOG = LoggerFactory.getLogger(ResultPartition.class);
 
-	@Nonnull
+	private static final Logger LOG = LoggerFactory.getLogger(ResultPartitionFactory.class);
+
 	private final ResultPartitionManager partitionManager;
 
-	@Nonnull
-	private final IOManager ioManager;
+	private final FileChannelManager channelManager;
 
-	@Nonnull
 	private final BufferPoolFactory bufferPoolFactory;
+
+	private final BoundedBlockingSubpartitionType blockingSubpartitionType;
 
 	private final int networkBuffersPerChannel;
 
 	private final int floatingNetworkBuffersPerGate;
 
+	private final int networkBufferSize;
+
+	private final boolean blockingShuffleCompressionEnabled;
+
+	private final String compressionCodec;
+
+	private final int maxBuffersPerChannel;
+
 	public ResultPartitionFactory(
-		@Nonnull ResultPartitionManager partitionManager,
-		@Nonnull IOManager ioManager,
-		@Nonnull BufferPoolFactory bufferPoolFactory,
+		ResultPartitionManager partitionManager,
+		FileChannelManager channelManager,
+		BufferPoolFactory bufferPoolFactory,
+		BoundedBlockingSubpartitionType blockingSubpartitionType,
 		int networkBuffersPerChannel,
-		int floatingNetworkBuffersPerGate) {
+		int floatingNetworkBuffersPerGate,
+		int networkBufferSize,
+		boolean blockingShuffleCompressionEnabled,
+		String compressionCodec,
+		int maxBuffersPerChannel) {
 
 		this.partitionManager = partitionManager;
-		this.ioManager = ioManager;
+		this.channelManager = channelManager;
 		this.networkBuffersPerChannel = networkBuffersPerChannel;
 		this.floatingNetworkBuffersPerGate = floatingNetworkBuffersPerGate;
 		this.bufferPoolFactory = bufferPoolFactory;
+		this.blockingSubpartitionType = blockingSubpartitionType;
+		this.networkBufferSize = networkBufferSize;
+		this.blockingShuffleCompressionEnabled = blockingShuffleCompressionEnabled;
+		this.compressionCodec = compressionCodec;
+		this.maxBuffersPerChannel = maxBuffersPerChannel;
 	}
 
 	public ResultPartition create(
-		@Nonnull String taskNameWithSubtaskAndId,
-		@Nonnull TaskActions taskActions,
-		@Nonnull JobID jobId,
-		@Nonnull ExecutionAttemptID executionAttemptID,
-		@Nonnull ResultPartitionDeploymentDescriptor desc,
-		@Nonnull ResultPartitionConsumableNotifier partitionConsumableNotifier) {
-
+			String taskNameWithSubtaskAndId,
+			int partitionIndex,
+			ResultPartitionDeploymentDescriptor desc) {
 		return create(
 			taskNameWithSubtaskAndId,
-			taskActions,
-			jobId,
-			new ResultPartitionID(desc.getPartitionId(), executionAttemptID),
+			partitionIndex,
+			desc.getShuffleDescriptor().getResultPartitionID(),
 			desc.getPartitionType(),
 			desc.getNumberOfSubpartitions(),
 			desc.getMaxParallelism(),
-			partitionConsumableNotifier,
-			desc.sendScheduleOrUpdateConsumersMessage(),
 			createBufferPoolFactory(desc.getNumberOfSubpartitions(), desc.getPartitionType()));
 	}
 
 	@VisibleForTesting
 	public ResultPartition create(
-		@Nonnull String taskNameWithSubtaskAndId,
-		@Nonnull TaskActions taskActions,
-		@Nonnull JobID jobId,
-		@Nonnull ResultPartitionID id,
-		@Nonnull ResultPartitionType type,
-		int numberOfSubpartitions,
-		int maxParallelism,
-		@Nonnull ResultPartitionConsumableNotifier partitionConsumableNotifier,
-		boolean sendScheduleOrUpdateConsumersMessage,
-		FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory) {
+			String taskNameWithSubtaskAndId,
+			int partitionIndex,
+			ResultPartitionID id,
+			ResultPartitionType type,
+			int numberOfSubpartitions,
+			int maxParallelism,
+			FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory) {
+		BufferCompressor bufferCompressor = null;
+		if (type.isBlocking() && blockingShuffleCompressionEnabled) {
+			bufferCompressor = new BufferCompressor(networkBufferSize, compressionCodec);
+		}
 
 		ResultSubpartition[] subpartitions = new ResultSubpartition[numberOfSubpartitions];
 
-		ResultPartition partition = new ResultPartition(
-			taskNameWithSubtaskAndId,
-			taskActions,
-			jobId,
-			id,
-			type,
-			subpartitions,
-			maxParallelism,
-			partitionManager,
-			partitionConsumableNotifier,
-			sendScheduleOrUpdateConsumersMessage,
-			bufferPoolFactory);
+		final ResultPartition partition;
+		if (type == ResultPartitionType.PIPELINED || type == ResultPartitionType.PIPELINED_BOUNDED) {
+			final PipelinedResultPartition pipelinedPartition = new PipelinedResultPartition(
+				taskNameWithSubtaskAndId,
+				partitionIndex,
+				id,
+				type,
+				subpartitions,
+				maxParallelism,
+				partitionManager,
+				bufferCompressor,
+				bufferPoolFactory);
 
-		createSubpartitions(partition, type, subpartitions);
+			for (int i = 0; i < subpartitions.length; i++) {
+				subpartitions[i] = new PipelinedSubpartition(i, pipelinedPartition);
+			}
 
-		// Initially, partitions should be consumed once before release.
-		partition.pin();
+			partition = pipelinedPartition;
+		}
+		else if (type == ResultPartitionType.BLOCKING || type == ResultPartitionType.BLOCKING_PERSISTENT) {
+			final BoundedBlockingResultPartition blockingPartition = new BoundedBlockingResultPartition(
+				taskNameWithSubtaskAndId,
+				partitionIndex,
+				id,
+				type,
+				subpartitions,
+				maxParallelism,
+				partitionManager,
+				bufferCompressor,
+				bufferPoolFactory);
+
+			initializeBoundedBlockingPartitions(
+				subpartitions,
+				blockingPartition,
+				blockingSubpartitionType,
+				networkBufferSize,
+				channelManager);
+
+			partition = blockingPartition;
+		}
+		else {
+			throw new IllegalArgumentException("Unrecognized ResultPartitionType: " + type);
+		}
 
 		LOG.debug("{}: Initialized {}", taskNameWithSubtaskAndId, this);
 
 		return partition;
 	}
 
-	private void createSubpartitions(
-		ResultPartition partition, ResultPartitionType type, ResultSubpartition[] subpartitions) {
-
-		// Create the subpartitions.
-		switch (type) {
-			case BLOCKING:
-				initializeBoundedBlockingPartitions(subpartitions, partition, ioManager);
-				break;
-
-			case PIPELINED:
-			case PIPELINED_BOUNDED:
-				for (int i = 0; i < subpartitions.length; i++) {
-					subpartitions[i] = new PipelinedSubpartition(i, partition);
-				}
-
-				break;
-
-			default:
-				throw new IllegalArgumentException("Unsupported result partition type.");
-		}
-	}
-
 	private static void initializeBoundedBlockingPartitions(
-		ResultSubpartition[] subpartitions,
-		ResultPartition parent,
-		IOManager ioManager) {
-
+			ResultSubpartition[] subpartitions,
+			BoundedBlockingResultPartition parent,
+			BoundedBlockingSubpartitionType blockingSubpartitionType,
+			int networkBufferSize,
+			FileChannelManager channelManager) {
 		int i = 0;
 		try {
-			for (; i < subpartitions.length; i++) {
-				subpartitions[i] = new BoundedBlockingSubpartition(
-					i, parent, ioManager.createChannel().getPathFile().toPath());
+			for (i = 0; i < subpartitions.length; i++) {
+				final File spillFile = channelManager.createChannel().getPathFile();
+				subpartitions[i] = blockingSubpartitionType.create(i, parent, spillFile, networkBufferSize);
 			}
 		}
 		catch (IOException e) {
@@ -184,18 +199,43 @@ public class ResultPartitionFactory {
 		}
 	}
 
+	/**
+	 * The minimum pool size should be <code>numberOfSubpartitions + 1</code> for two considerations:
+	 *
+	 * <p>1. StreamTask can only process input if there is at-least one available buffer on output side, so it might cause
+	 * stuck problem if the minimum pool size is exactly equal to the number of subpartitions, because every subpartition
+	 * might maintain a partial unfilled buffer.
+	 *
+	 * <p>2. Increases one more buffer for every output LocalBufferPool to void performance regression if processing input is
+	 * based on at-least one buffer available on output side.
+	 */
 	@VisibleForTesting
 	FunctionWithException<BufferPoolOwner, BufferPool, IOException> createBufferPoolFactory(
-		int numberOfSubpartitions, ResultPartitionType type) {
-
-		return p -> {
+			int numberOfSubpartitions,
+			ResultPartitionType type) {
+		return bufferPoolOwner -> {
 			int maxNumberOfMemorySegments = type.isBounded() ?
 				numberOfSubpartitions * networkBuffersPerChannel + floatingNetworkBuffersPerGate : Integer.MAX_VALUE;
 			// If the partition type is back pressure-free, we register with the buffer pool for
 			// callbacks to release memory.
-			return bufferPoolFactory.createBufferPool(numberOfSubpartitions,
+			return bufferPoolFactory.createBufferPool(
+				numberOfSubpartitions + 1,
 				maxNumberOfMemorySegments,
-				type.hasBackPressure() ? Optional.empty() : Optional.of(p));
+				type.hasBackPressure() ? null : bufferPoolOwner,
+				numberOfSubpartitions,
+				maxBuffersPerChannel);
 		};
+	}
+
+	static BoundedBlockingSubpartitionType getBoundedBlockingType() {
+		switch (ProcessorArchitecture.getMemoryAddressSize()) {
+			case _64_BIT:
+				return BoundedBlockingSubpartitionType.FILE_MMAP;
+			case _32_BIT:
+				return BoundedBlockingSubpartitionType.FILE;
+			default:
+				LOG.warn("Cannot determine memory architecture. Using pure file-based shuffle.");
+				return BoundedBlockingSubpartitionType.FILE;
+		}
 	}
 }

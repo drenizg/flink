@@ -43,22 +43,22 @@ public class NettyConnectionManager implements ConnectionManager {
 	public NettyConnectionManager(
 		ResultPartitionProvider partitionProvider,
 		TaskEventPublisher taskEventPublisher,
-		NettyConfig nettyConfig,
-		boolean isCreditBased) {
+		NettyConfig nettyConfig) {
 
 		this.server = new NettyServer(nettyConfig);
 		this.client = new NettyClient(nettyConfig);
 		this.bufferPool = new NettyBufferPool(nettyConfig.getNumberOfArenas());
 
-		this.partitionRequestClientFactory = new PartitionRequestClientFactory(client);
+		this.partitionRequestClientFactory = new PartitionRequestClientFactory(client, nettyConfig.getNetworkRetries());
 
-		this.nettyProtocol = new NettyProtocol(checkNotNull(partitionProvider), checkNotNull(taskEventPublisher), isCreditBased);
+		this.nettyProtocol = new NettyProtocol(checkNotNull(partitionProvider), checkNotNull(taskEventPublisher));
 	}
 
 	@Override
-	public void start() throws IOException {
+	public int start() throws IOException {
 		client.init(nettyProtocol, bufferPool);
-		server.init(nettyProtocol, bufferPool);
+
+		return server.init(nettyProtocol, bufferPool);
 	}
 
 	@Override
@@ -75,15 +75,6 @@ public class NettyConnectionManager implements ConnectionManager {
 	@Override
 	public int getNumberOfActiveConnections() {
 		return partitionRequestClientFactory.getNumberOfActiveClients();
-	}
-
-	@Override
-	public int getDataPort() {
-		if (server != null && server.getLocalAddress() != null) {
-			return server.getLocalAddress().getPort();
-		} else {
-			return -1;
-		}
 	}
 
 	@Override

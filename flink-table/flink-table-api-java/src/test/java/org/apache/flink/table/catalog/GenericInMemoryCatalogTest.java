@@ -18,7 +18,6 @@
 
 package org.apache.flink.table.catalog;
 
-import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatisticsDataBase;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatisticsDataBinary;
@@ -29,7 +28,8 @@ import org.apache.flink.table.catalog.stats.CatalogColumnStatisticsDataLong;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatisticsDataString;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.catalog.stats.Date;
-import org.apache.flink.table.functions.ScalarFunction;
+import org.apache.flink.table.functions.TestGenericUDF;
+import org.apache.flink.table.functions.TestSimpleUDF;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -78,35 +78,15 @@ public class GenericInMemoryCatalogTest extends CatalogTestBase {
 		CatalogPartitionSpec catalogPartitionSpec = createPartitionSpec();
 		catalog.createPartition(path1, catalogPartitionSpec, catalogPartition, false);
 
-		checkEquals(table, (CatalogTable) catalog.getTable(path1));
+		CatalogTestUtil.checkEquals(table, (CatalogTable) catalog.getTable(path1));
 		assertTrue(catalog.partitionExists(path1, catalogPartitionSpec));
 
 		catalog.renameTable(path1, t2, false);
 
-		checkEquals(table, (CatalogTable) catalog.getTable(path3));
+		CatalogTestUtil.checkEquals(table, (CatalogTable) catalog.getTable(path3));
 		assertTrue(catalog.partitionExists(path3, catalogPartitionSpec));
 		assertFalse(catalog.tableExists(path1));
 		assertFalse(catalog.partitionExists(path1, catalogPartitionSpec));
-	}
-
-	// ------ partitions ------
-
-	@Test
-	public void testAlterPartition_differentTypedPartition() throws Exception {
-		catalog.createDatabase(db1, createDb(), false);
-		catalog.createTable(path1, createPartitionedTable(), false);
-
-		CatalogPartitionSpec partitionSpec = createPartitionSpec();
-		CatalogPartition partition = createPartition();
-		catalog.createPartition(path1, partitionSpec, partition, false);
-
-		exception.expect(CatalogException.class);
-		exception.expectMessage(
-			String.format("Partition types don't match. " +
-				"Existing partition is '%s' and " +
-				"new partition is 'org.apache.flink.table.catalog.CatalogTestBase$TestPartition'.",
-				partition.getClass().getName()));
-		catalog.alterPartition(path1, partitionSpec, new TestPartition(), false);
 	}
 
 	// ------ statistics ------
@@ -145,96 +125,16 @@ public class GenericInMemoryCatalogTest extends CatalogTestBase {
 
 		// Clean up
 		catalog.dropTable(path1, false);
-		catalog.dropDatabase(db1, false);
+		catalog.dropDatabase(db1, false, false);
 		catalog.dropTable(path2, false);
-		catalog.dropDatabase(db2, false);
+		catalog.dropDatabase(db2, false, false);
 	}
 
 	// ------ utilities ------
 
 	@Override
-	public CatalogDatabase createDb() {
-		return new GenericCatalogDatabase(
-			new HashMap<String, String>() {{
-				put("k1", "v1");
-			}},
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogDatabase createAnotherDb() {
-		return new GenericCatalogDatabase(
-			new HashMap<String, String>() {{
-				put("k2", "v2");
-			}},
-			"this is another database.");
-	}
-
-	@Override
-	public GenericCatalogTable createStreamingTable() {
-		return new GenericCatalogTable(
-			createTableSchema(),
-			getStreamingTableProperties(),
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogTable createTable() {
-		return new GenericCatalogTable(
-			createTableSchema(),
-			getBatchTableProperties(),
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogTable createAnotherTable() {
-		return new GenericCatalogTable(
-			createAnotherTableSchema(),
-			getBatchTableProperties(),
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogTable createPartitionedTable() {
-		return new GenericCatalogTable(
-			createTableSchema(),
-			createPartitionKeys(),
-			getBatchTableProperties(),
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogTable createAnotherPartitionedTable() {
-		return new GenericCatalogTable(
-			createAnotherTableSchema(),
-			createPartitionKeys(),
-			getBatchTableProperties(),
-			TEST_COMMENT);
-	}
-
-	@Override
-	public CatalogPartition createPartition() {
-		return new GenericCatalogPartition(getBatchTableProperties(), "Generic batch table");
-	}
-
-	@Override
-	public CatalogView createView() {
-		return new GenericCatalogView(
-			String.format("select * from %s", t1),
-			String.format("select * from %s.%s", TEST_CATALOG_NAME, path1.getFullName()),
-			createTableSchema(),
-			new HashMap<>(),
-			"This is a view");
-	}
-
-	@Override
-	public CatalogView createAnotherView() {
-		return new GenericCatalogView(
-			String.format("select * from %s", t2),
-			String.format("select * from %s.%s", TEST_CATALOG_NAME, path2.getFullName()),
-			createAnotherTableSchema(),
-			new HashMap<>(),
-			"This is another view");
+	protected boolean isGeneric() {
+		return true;
 	}
 
 	private CatalogColumnStatistics createColumnStats() {
@@ -242,7 +142,7 @@ public class GenericInMemoryCatalogTest extends CatalogTestBase {
 		CatalogColumnStatisticsDataLong longColStats = new CatalogColumnStatisticsDataLong(-123L, 763322L, 23L, 79L);
 		CatalogColumnStatisticsDataString stringColStats = new CatalogColumnStatisticsDataString(152L, 43.5D, 20L, 0L);
 		CatalogColumnStatisticsDataDate dateColStats = new CatalogColumnStatisticsDataDate(new Date(71L),
-			new Date(17923L), 1321, 0L);
+			new Date(17923L), 1321L, 0L);
 		CatalogColumnStatisticsDataDouble doubleColStats = new CatalogColumnStatisticsDataDouble(-123.35D, 7633.22D, 23L, 79L);
 		CatalogColumnStatisticsDataBinary binaryColStats = new CatalogColumnStatisticsDataBinary(755L, 43.5D, 20L);
 		Map<String, CatalogColumnStatisticsDataBase> colStatsMap = new HashMap<>(6);
@@ -257,30 +157,16 @@ public class GenericInMemoryCatalogTest extends CatalogTestBase {
 
 	@Override
 	protected CatalogFunction createFunction() {
-		return new GenericCatalogFunction(MyScalarFunction.class.getName(), new HashMap<>());
+		return new CatalogFunctionImpl(TestGenericUDF.class.getCanonicalName());
 	}
 
 	@Override
 	protected CatalogFunction createAnotherFunction() {
-		return new GenericCatalogFunction(MyOtherScalarFunction.class.getName(), new HashMap<>());
+		return new CatalogFunctionImpl(TestSimpleUDF.class.getCanonicalName(), FunctionLanguage.SCALA);
 	}
 
-	/**
-	 * Test UDF.
-	 */
-	public static class MyScalarFunction extends ScalarFunction {
-		public Integer eval(Integer i) {
-			return i + 1;
-		}
+	@Override
+	protected CatalogFunction createPythonFunction() {
+		return new CatalogFunctionImpl("test.func1", FunctionLanguage.PYTHON);
 	}
-
-	/**
-	 * Test UDF.
-	 */
-	public static class MyOtherScalarFunction extends ScalarFunction {
-		public String eval(Integer i) {
-			return String.valueOf(i);
-		}
-	}
-
 }
